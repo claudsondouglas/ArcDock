@@ -35,20 +35,21 @@
     box-shadow: 0 14px 36px 0 rgba(0, 0, 0, 0.28);
 }
 
-.liquiddock-icon {
-    padding: 2px;
-    background-color: transparent;
-    border: none;
-    box-shadow: none;
-    transition-duration: 200ms;
-}
-
+.liquiddock-icon,
 .liquiddock-icon:hover,
 .liquiddock-icon:active,
-.liquiddock-icon:focus {
+.liquiddock-icon:focus,
+.liquiddock-icon:checked,
+.liquiddock-icon:insensitive {
+    padding: 2px;
+    background: none;
     background-color: transparent;
+    background-image: none;
+    background-gradient-direction: none;
     border: none;
+    border-image: none;
     box-shadow: none;
+    transition-duration: 200ms;
 }
 
 .liquiddock-menu-icon {
