@@ -1,0 +1,64 @@
+/* LiquidDock — macOS Tahoe "Liquid Glass".
+ *
+ * Liquid Glass has THREE visual layers on the rim, not one solid border:
+ *   1. A bright top edge — the light refracted through the upper bevel.
+ *   2. A subtle bottom edge — interior shadow under the lower bevel.
+ *   3. Soft side rims — gentle highlights that connect top and bottom.
+ *
+ * GNOME St CSS doesn't support `backdrop-filter` (handled by
+ * Shell.BlurEffect in src/glassEffect.js), nor multiple box-shadows,
+ * nor `border-image` reliably. But it DOES accept per-side borders,
+ * which is enough to fake the multi-tone glass rim below.
+ */
+
+.liquiddock-panel {
+    spacing: 4px;
+    padding: 4px 8px;
+    border-radius: 24px;
+
+    /* Glass body: top brighter for the inner top-edge highlight,
+     * bottom subtler so the wallpaper reads through the lower half. */
+    background-gradient-direction: vertical;
+    background-gradient-start: rgba(255, 255, 255, 0.42);
+    background-gradient-end: rgba(255, 255, 255, 0.22);
+
+    /* Multi-tone rim — the SIDES are the brightest (curved bevels
+     * refract more light than the flat top), the top is moderate, the
+     * bottom is the dimmest. This matches Tahoe's Liquid Glass where
+     * the side rims read almost like a halo around the dock. */
+    border-top: 1px solid rgba(255, 255, 255, 0.45);
+    border-left: 1px solid rgba(255, 255, 255, 0.8);
+    border-right: 1px solid rgba(255, 255, 255, 0.8);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+
+    /* Outer shadow for depth. */
+    box-shadow: 0 14px 36px 0 rgba(0, 0, 0, 0.28);
+}
+
+.liquiddock-icon {
+    padding: 2px;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    transition-duration: 200ms;
+}
+
+.liquiddock-icon:hover,
+.liquiddock-icon:active,
+.liquiddock-icon:focus {
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+.liquiddock-menu-icon {
+    color: rgba(255, 255, 255, 0.95);
+}
+
+.liquiddock-icon-texture {
+    icon-size: 56px;
+}
+
+.liquiddock-menu-icon-symbolic {
+    icon-size: 56px;
+}
