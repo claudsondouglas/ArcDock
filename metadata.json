@@ -3,6 +3,7 @@
   "name": "MahoeDock",
   "description": "Minimal Style dock — simple, i just find nothing and make my own.",
   "shell-version": ["46"],
+  "session-modes": ["user", "zorin", "unlock-dialog"],
   "url": "",
   "version": 1
 }

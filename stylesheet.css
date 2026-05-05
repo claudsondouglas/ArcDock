@@ -13,8 +13,8 @@
 
 .liquiddock-panel {
     spacing: 4px;
-    padding: 4px 8px;
-    border-radius: 24px;
+    padding: 4px 4px;
+    border-radius: 18px;
 
     /* Glass body: top brighter for the inner top-edge highlight,
      * bottom subtler so the wallpaper reads through the lower half. */
@@ -62,4 +62,10 @@
 
 .liquiddock-menu-icon-symbolic {
     icon-size: 56px;
+}
+
+.liquiddock-drop-indicator {
+    background-color: rgba(255, 255, 255, 0.18);
+    border: 2px dashed rgba(255, 255, 255, 0.55);
+    border-radius: 12px;
 }

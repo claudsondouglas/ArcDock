@@ -1,8 +1,10 @@
 import Clutter from "gi://Clutter";
+import Meta from "gi://Meta";
 import Shell from "gi://Shell";
 import St from "gi://St";
 
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
+import * as DND from "resource:///org/gnome/shell/ui/dnd.js";
 
 import { SIZE, ANIM, State } from "./config.js";
 import { SignalTracker } from "./trackers.js";
@@ -18,6 +20,7 @@ export class Dock {
   constructor() {
     this._appSystem = Shell.AppSystem.get_default();
     this._icons = new Map();
+    this._iconOrder = [];
     this._signals = new SignalTracker();
     this._panelSize = { w: 0, h: 0 };
     this._showAppsIcon = null;
@@ -43,6 +46,11 @@ export class Dock {
     });
     applyGlass(this._panel);
     this._container.set_child(this._panel);
+
+    // Container exclusivo para ícones de janela — o DnD opera só aqui.
+    this._appsBox = new St.BoxLayout({ vertical: false });
+    this._appsBox._delegate = this;
+    this._panel.add_child(this._appsBox);
 
     this._showAppsIcon = new ShowAppsIcon();
     this._panel.add_child(this._showAppsIcon);
@@ -83,6 +91,9 @@ export class Dock {
     this._signals.connect(this._appSystem, "installed-changed", () =>
       this._refresh(),
     );
+    this._signals.connect(global.display, "window-created", () =>
+      this._refresh(),
+    );
     this._signals.connect(global.display, "restacked", () =>
       this._raiseToTop(),
     );
@@ -101,31 +112,65 @@ export class Dock {
   }
 
   destroy() {
-    Cursor.setDefault();
-    this._autoHide.destroy();
-    this._signals.disconnectAll();
-    for (const icon of this._icons.values()) icon.destroy();
+    // Cada passo em try/catch isolado: se um falhar (ex: signal já
+    // desconectado pelo shell durante session-mode change), os passos
+    // críticos seguintes — especialmente removeChrome — ainda rodam.
+    // Sem isso, uma exception em qualquer ponto deixa chrome zumbi
+    // que faz o enable() seguinte falhar e a extensão fica INACTIVE.
+    const safe = (fn) => { try { fn(); } catch (_) {} };
+
+    safe(() => Cursor.setDefault());
+    safe(() => this._hideDropIndicator());
+    safe(() => this._autoHide?.destroy());
+    this._autoHide = null;
+    safe(() => this._signals.disconnectAll());
+    for (const icon of this._icons.values()) safe(() => icon.destroy());
     this._icons.clear();
-    this._showAppsIcon?.destroy();
+    safe(() => this._showAppsIcon?.destroy());
     this._showAppsIcon = null;
-    this._overviewDashHider.destroy();
+    safe(() => this._overviewDashHider?.destroy());
     this._overviewDashHider = null;
-    this._inputCatcher?.destroy();
+    safe(() => this._inputCatcher?.destroy());
     this._inputCatcher = null;
-    Main.layoutManager.removeChrome(this._container);
-    this._container.destroy();
+    safe(() => {
+      if (this._container) {
+        Main.layoutManager.removeChrome(this._container);
+        this._container.destroy();
+      }
+    });
     this._container = null;
   }
 
   _refresh() {
-    const seen = new Set();
+    const entries = [];
     for (const app of this._appSystem.get_running()) {
-      const id = app.get_id();
+      for (const window of app.get_windows()) {
+        if (window.is_skip_taskbar()) continue;
+        if (window.get_window_type() !== Meta.WindowType.NORMAL) continue;
+        entries.push({ window, app });
+      }
+    }
+
+    const seen = new Set();
+    for (const { window, app } of entries) {
+      const id = window.get_stable_sequence();
       seen.add(id);
       if (!this._icons.has(id)) {
-        const icon = new DockIcon(app);
+        this._signals.connect(window, "unmanaged", () => this._refresh());
+        const icon = new DockIcon(window, app);
+        this._signals.connect(icon._draggable, "drag-begin", () =>
+          this._suppressHover(),
+        );
+        this._signals.connect(icon._draggable, "drag-end", () => {
+          this._hideDropIndicator();
+          this._resumeHover();
+        });
+        this._signals.connect(icon._draggable, "drag-cancelled", () => {
+          this._hideDropIndicator();
+          this._resumeHover();
+        });
         this._icons.set(id, icon);
-        this._panel.add_child(icon);
+        this._appsBox.add_child(icon);
       }
     }
     for (const [id, icon] of this._icons) {
@@ -134,13 +179,122 @@ export class Dock {
         this._icons.delete(id);
       }
     }
-    this._keepShowAppsIconLast();
+    this._syncOrder(seen);
+    this._applyOrder();
     this._reposition();
   }
 
-  _keepShowAppsIconLast() {
-    if (!this._showAppsIcon) return;
-    this._panel.set_child_above_sibling(this._showAppsIcon, null);
+  _syncOrder(currentIds) {
+    this._iconOrder = this._iconOrder.filter((id) => currentIds.has(id));
+    const inOrder = new Set(this._iconOrder);
+    const newIds = [...currentIds]
+      .filter((id) => !inOrder.has(id))
+      .sort((a, b) => a - b);
+    this._iconOrder.push(...newIds);
+  }
+
+  _applyOrder() {
+    this._iconOrder.forEach((id, idx) => {
+      const icon = this._icons.get(id);
+      if (!icon) return;
+      const parent = icon.get_parent();
+      if (parent !== this._appsBox) {
+        parent?.remove_child(icon);
+        this._appsBox.insert_child_at_index(icon, idx);
+      } else {
+        this._appsBox.set_child_at_index(icon, idx);
+      }
+      icon.show();
+      icon.opacity = 255;
+    });
+  }
+
+  // DND drop target — chamados no _delegate do panel.
+  handleDragOver(source, _actor, x) {
+    if (!(source instanceof DockIcon)) return DND.DragMotionResult.NO_DROP;
+    this._showDropIndicator();
+    this._moveDropIndicator(this._dropIndexAt(x));
+    return DND.DragMotionResult.MOVE_DROP;
+  }
+
+  acceptDrop(source, _actor, x) {
+    if (!(source instanceof DockIcon)) return false;
+    const sourceId = source.window.get_stable_sequence();
+    const targetIndex = this._dropIndexAt(x);
+    this._hideDropIndicator();
+    this._reorder(sourceId, targetIndex);
+    return true;
+  }
+
+  _suppressHover() {
+    const targets = [...this._icons.values()];
+    if (this._showAppsIcon) targets.push(this._showAppsIcon);
+    for (const a of targets) {
+      a.remove_all_transitions();
+      a.scale_x = 1;
+      a.scale_y = 1;
+      a.translation_y = 0;
+      a.track_hover = false;
+    }
+    Cursor.setDefault();
+  }
+
+  _resumeHover() {
+    const targets = [...this._icons.values()];
+    if (this._showAppsIcon) targets.push(this._showAppsIcon);
+    for (const a of targets) a.track_hover = true;
+  }
+
+  _showDropIndicator() {
+    if (this._dropIndicator) return;
+    this._dropIndicator = new St.Widget({
+      style_class: "liquiddock-drop-indicator",
+      width: SIZE.ICON,
+      height: SIZE.ICON,
+    });
+    this._appsBox.add_child(this._dropIndicator);
+  }
+
+  _hideDropIndicator() {
+    this._dropIndicator?.destroy();
+    this._dropIndicator = null;
+  }
+
+  _moveDropIndicator(visualIndex) {
+    if (!this._dropIndicator) return;
+    // Converte índice visual (só ícones visíveis) em índice absoluto de children.
+    const children = this._appsBox.get_children()
+      .filter(c => c !== this._dropIndicator);
+    let visCount = 0;
+    for (let i = 0; i < children.length; i++) {
+      if (!children[i].visible) continue;
+      if (visCount === visualIndex) {
+        this._appsBox.set_child_at_index(this._dropIndicator, i);
+        return;
+      }
+      visCount++;
+    }
+    this._appsBox.set_child_at_index(this._dropIndicator, children.length);
+  }
+
+  _dropIndexAt(x) {
+    let idx = 0;
+    for (const child of this._appsBox.get_children()) {
+      if (child === this._dropIndicator) continue;
+      if (!child.visible) continue; // ignora source (hidden durante drag)
+      const center = child.x + child.width / 2;
+      if (x < center) return idx;
+      idx++;
+    }
+    return idx;
+  }
+
+  _reorder(sourceId, targetIndex) {
+    const fromIndex = this._iconOrder.indexOf(sourceId);
+    if (fromIndex === -1) return;
+    this._iconOrder.splice(fromIndex, 1);
+    this._iconOrder.splice(targetIndex, 0, sourceId);
+    this._applyOrder();
   }
 
   _reposition() {

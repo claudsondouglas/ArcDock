@@ -12,8 +12,16 @@ export class SignalTracker {
     }
 
     disconnectAll() {
-        for (const { obj, id } of this._connections)
-            obj.disconnect(id);
+        for (const { obj, id } of this._connections) {
+            try {
+                // GObjects: pula se handler já foi removido (ex: Meta.Window
+                // unmanaged, actor destroyed). Sem isso, disconnect lança e
+                // alguns casos vazam do try/catch.
+                if (typeof obj?.signal_handler_is_connected === 'function'
+                    && !obj.signal_handler_is_connected(id)) continue;
+                obj?.disconnect(id);
+            } catch (_) {}
+        }
         this._connections.length = 0;
     }
 }
