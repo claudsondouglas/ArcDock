@@ -65,9 +65,9 @@ function _showTooltip(button) {
 
   _hideTooltip(button);
 
-  // popup-menu-content é a classe nativa do GNOME usada pelos menus de
-  // popup — herda background, cor de texto, border, shadow do tema do
-  // shell, igual ao menu de botão direito do dock.
+  // popup-menu-content traz background/cor do tema atual; nosso CSS
+  // sobrescreve margin/min-height pra que a geometria do bubble fique
+  // determinística (a seta nunca descola por causa de tema custom).
   const label = new St.Label({
     text,
     style_class: "popup-menu-content arcdock-tooltip-label",
@@ -105,11 +105,9 @@ function _showTooltip(button) {
     height: ARROW_H,
     x_align: Clutter.ActorAlign.CENTER,
     x_expand: true,
+    // Encosta a seta no bubble — evita gap de 1px por arredondamento.
+    style: "margin-top: -1px;",
   });
-  // translation_y aplicado após a inserção pra garantir que o BoxLayout
-  // não reseta. Valor negativo > altura da seta faz sobreposição visual
-  // dentro da área do label, eliminando qualquer gap perceptível.
-  arrow.translation_y = 0;
   arrow.connect("repaint", () => {
     const cr = arrow.get_context();
     const [w, h] = arrow.get_surface_size();
