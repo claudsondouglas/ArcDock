@@ -63,6 +63,14 @@ export default class ArcDockExtension extends Extension {
     }
 
     disable() {
+        // unlock-dialog rationale: declared in metadata.json session-modes
+        // so the extension stays subscribed to logind's prepare-for-sleep
+        // (WakeWatcher) and to Main.sessionMode 'updated' across the lock
+        // screen — the dock can then reappear instantly on unlock. The
+        // dock UI is destroyed when entering unlock-dialog mode (see the
+        // sessionMode handler in enable()), so nothing is rendered on the
+        // lock screen. disable() only runs on real teardown (logout,
+        // uninstall, user toggle), never on lock.
         log('[ArcDock] disable() entry');
         try {
             this._enabled = false;
