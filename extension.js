@@ -7,12 +7,14 @@ import { WakeWatcher } from './src/wakeWatcher.js';
 
 export default class ArcDockExtension extends Extension {
     enable() {
+        log('[ArcDock] enable() entry');
         try {
             this._enabled = true;
             this._restartSourceIds = new Set();
             this._signalConnections = [];
             this._settings = this.getSettings();
             this._lastSessionMode = Main.sessionMode.currentMode;
+            log(`[ArcDock] enable: lastSessionMode=${this._lastSessionMode}`);
             this._wakeWatcher = new WakeWatcher(() => this._scheduleDockRestart(1200, 'prepare-for-sleep'));
             this._connectSignal(this._settings, 'changed::icon-size', () => {
                 log('[ArcDock] icon size changed');
@@ -23,18 +25,22 @@ export default class ArcDockExtension extends Extension {
                 this._restartDock('running-dot-theme-color-changed');
             });
             this._connectSignal(Main.sessionMode, 'updated', () => {
-                const mode = Main.sessionMode.currentMode;
-                log(`[ArcDock] session mode updated: ${this._lastSessionMode} -> ${mode}`);
-                const wasLocked = this._isLockedMode(this._lastSessionMode);
-                const isLocked = this._isLockedMode(mode);
-                this._lastSessionMode = mode;
+                try {
+                    const mode = Main.sessionMode.currentMode;
+                    log(`[ArcDock] session mode updated: ${this._lastSessionMode} -> ${mode}`);
+                    const wasLocked = this._isLockedMode(this._lastSessionMode);
+                    const isLocked = this._isLockedMode(mode);
+                    this._lastSessionMode = mode;
 
-                if (isLocked) {
-                    this._cancelDockRestarts();
-                    this._destroyDock();
-                } else if (wasLocked) {
-                    this._ensureDock();
-                    this._scheduleDockRepairSeries('session-unlocked');
+                    if (isLocked) {
+                        this._cancelDockRestarts();
+                        this._destroyDock();
+                    } else if (wasLocked) {
+                        this._ensureDock();
+                        this._scheduleDockRepairSeries('session-unlocked');
+                    }
+                } catch (e) {
+                    logError(e, '[ArcDock] sessionMode updated handler failed');
                 }
             });
             this._connectSignal(Main.layoutManager, 'monitors-changed', () => {
@@ -53,11 +59,12 @@ export default class ArcDockExtension extends Extension {
             logError(e, '[ArcDock] enable() failed');
             throw e;
         }
+        log('[ArcDock] enable() exit');
     }
 
     disable() {
+        log('[ArcDock] disable() entry');
         try {
-            log('[ArcDock] disable');
             this._enabled = false;
             this._cancelDockRestarts();
             this._disconnectSignals();
@@ -68,6 +75,7 @@ export default class ArcDockExtension extends Extension {
         } catch (e) {
             logError(e, '[ArcDock] disable() failed');
         }
+        log('[ArcDock] disable() exit');
     }
 
     _connectSignal(obj, signal, handler) {
