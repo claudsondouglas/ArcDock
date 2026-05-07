@@ -3,7 +3,7 @@
   "name": "ArcDock",
   "description": "A minimal macOS-style dock for GNOME Shell. Shows only running apps with auto-hide and frosted glass, on the bottom edge of the primary screen.",
   "shell-version": ["46", "47", "48"],
-  "session-modes": ["user", "unlock-dialog"],
+  "session-modes": ["user"],
   "settings-schema": "org.gnome.shell.extensions.arcdock",
   "url": "https://github.com/claudsondouglas/ArcDock",
   "version": 1
