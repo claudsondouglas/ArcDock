@@ -15,18 +15,18 @@ export default class ArcDockPreferences extends ExtensionPreferences {
     const settings = this.getSettings();
 
     const appearancePage = new Adw.PreferencesPage({
-      title: "Aparência",
+      title: "Appearance",
       icon_name: "preferences-desktop-appearance-symbolic",
     });
     window.add(appearancePage);
 
     const group = new Adw.PreferencesGroup({
-      title: "Ícones",
+      title: "Icons",
     });
     appearancePage.add(group);
 
     const row = new Adw.ActionRow({
-      title: "Tamanho do ícone",
+      title: "Icon size",
     });
     group.add(row);
 
@@ -77,14 +77,14 @@ export default class ArcDockPreferences extends ExtensionPreferences {
     row.activatable_widget = scale;
 
     const indicatorGroup = new Adw.PreferencesGroup({
-      title: "Indicador de app aberto",
+      title: "Running app indicator",
     });
     appearancePage.add(indicatorGroup);
 
     const dotRow = new Adw.ActionRow({
-      title: "Usar cor do tema",
+      title: "Use theme color",
       subtitle:
-        "Quando ligado, a bolinha de app aberto adapta a cor ao tema do sistema. Desligado, usa a cor padrão da dock.",
+        "When enabled, the running-app dot adapts its color to the system theme. When disabled, it uses the dock's default color.",
     });
     indicatorGroup.add(dotRow);
 
@@ -100,19 +100,19 @@ export default class ArcDockPreferences extends ExtensionPreferences {
     dotRow.activatable_widget = dotSwitch;
 
     const communityPage = new Adw.PreferencesPage({
-      title: "Comunidade",
+      title: "Community",
       icon_name: "system-users-symbolic",
     });
     window.add(communityPage);
 
     const communityGroup = new Adw.PreferencesGroup({
-      title: "Contribua do seu jeito",
+      title: "Contribute your way",
     });
     communityPage.add(communityGroup);
 
     const text = new Gtk.Label({
       label:
-        "O Linux cresce porque a comunidade cria, testa, documenta e compartilha. Nem toda contribuição precisa ser grande como o kernel: uma dock, uma tradução, um bug report ou uma ideia bem explicada também ajudam o ecossistema inteiro.",
+        "Linux thrives because the community builds, tests, documents and shares. Not every contribution has to be as big as the kernel: a dock, a translation, a bug report or a well-explained idea all help the whole ecosystem.",
       wrap: true,
       xalign: 0,
     });

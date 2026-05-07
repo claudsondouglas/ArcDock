@@ -1,10 +1,10 @@
 {
   "uuid": "ArcDock@claudson",
   "name": "ArcDock",
-  "description": "Minimal Style dock — simple, i just find nothing and make my own.",
-  "shell-version": ["46"],
-  "session-modes": ["user", "zorin", "unlock-dialog"],
+  "description": "A minimal macOS-style dock for GNOME Shell. Shows only running apps with auto-hide and frosted glass, on the bottom edge of the primary screen.",
+  "shell-version": ["46", "47", "48"],
+  "session-modes": ["user", "unlock-dialog"],
   "settings-schema": "org.gnome.shell.extensions.arcdock",
-  "url": "",
+  "url": "https://github.com/claudsondouglas/ArcDock",
   "version": 1
 }
