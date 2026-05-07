@@ -7,6 +7,8 @@ Apple — vidro fosco, tooltip no hover, aparição suave
 quando o cursor toca a borda inferior — usando apenas as APIs nativas do
 GNOME Shell (Clutter, St, Shell.BlurEffect).
 
+![ArcDock screenshot](https://i.postimg.cc/L51nJHVk/Captura-de-tela-de-2026-05-06-21-49-58.png)
+
 ## Características
 
 - **Auto-hide** com hot-edge na borda inferior e polling de cursor.
