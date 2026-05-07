@@ -1,109 +1,109 @@
-# ArcDock — instruções para Claude
+# ArcDock — instructions for Claude
 
-Extensão GNOME Shell minimalista (estilo macOS Tahoe) que mostra apenas apps em execução, com auto-hide, na borda inferior da tela primária.
+A minimalist GNOME Shell extension (macOS Tahoe style) that shows only running apps, with auto-hide, on the bottom edge of the primary screen.
 
-## Como recarregar após editar JS
+## How to reload after editing JS
 
-- **Xorg (preferido para dev):** `Alt+F2` → `r` → `Enter`. Reinicia o gnome-shell e força reimport do módulo. Este é o caminho usado neste projeto.
-- **Wayland:** `gnome-extensions disable arcdock@claudson; gnome-extensions enable arcdock@claudson` *pode* funcionar, mas em GNOME 46+ o cache de módulos ESM frequentemente reusa o módulo em memória — JS edits ficam invisíveis. Se logs novos não aparecerem após enable, o único caminho confiável é logout/login.
-- CSS-only (`stylesheet.css`) recarrega junto com o shell. Não há truque mais barato confiável.
+- **Xorg (preferred for dev):** `Alt+F2` → `r` → `Enter`. Restarts gnome-shell and forces module reimport. This is the path used in this project.
+- **Wayland:** `gnome-extensions disable arcdock@claudson; gnome-extensions enable arcdock@claudson` *may* work, but on GNOME 46+ the ESM module cache often reuses the in-memory module — JS edits stay invisible. If new logs don't show up after enable, the only reliable path is logout/login.
+- CSS-only changes (`stylesheet.css`) reload along with the shell. There's no cheaper reliable trick.
 
-## Arquitetura
+## Architecture
 
 ```
-extension.js              — entry point: ArcDockExtension.enable/disable, instancia Dock.
+extension.js              — entry point: ArcDockExtension.enable/disable, instantiates Dock.
 src/
-├── config.js             — SIZE, ANIM, TIMING, State (constantes Object.freeze).
+├── config.js             — SIZE, ANIM, TIMING, State (Object.freeze constants).
 ├── trackers.js           — SignalTracker, TimeoutTracker.
-├── cursor.js             — helpers de cursor (setPointer/setDefault).
-├── iconAnimation.js      — attachHoverPress(button): cursor + tooltip no hover.
-├── dockIcon.js           — DockIcon (St.Button por app, click/middle-click).
-├── showAppsIcon.js       — ShowAppsIcon (St.Button do menu, abre overview).
-├── autoHide.js           — AutoHide (anima translation_y, polling de pointer).
+├── cursor.js             — cursor helpers (setPointer/setDefault).
+├── iconAnimation.js      — attachHoverPress(button): cursor + hover tooltip.
+├── dockIcon.js           — DockIcon (St.Button per app, click/middle-click).
+├── showAppsIcon.js       — ShowAppsIcon (menu St.Button, opens overview).
+├── autoHide.js           — AutoHide (animates translation_y, pointer polling).
 └── dock.js               — Dock (chrome container + panel + Map<appId, DockIcon>; layout).
 ```
 
-Uma classe = um arquivo = uma responsabilidade. **Nada que precise de cleanup vive solto fora de um tracker.**
+One class = one file = one responsibility. **Anything that needs cleanup never lives loose outside a tracker.**
 
-### Regras de import
-- Imports externos (`gi://`, `resource:///`) primeiro.
-- Linha em branco.
-- Imports relativos (`./config.js` etc.) depois.
-- `extension.js` na raiz é o único arquivo cujo path é fixado pelo GNOME — todo o resto vive em `src/` para deixar claro o que é entry point e o que é módulo interno.
-- Caminhos relativos sempre com extensão `.js` explícita (ESM no GJS exige).
+### Import rules
+- External imports (`gi://`, `resource:///`) first.
+- Blank line.
+- Relative imports (`./config.js` etc.) afterwards.
+- `extension.js` at the root is the only file whose path is fixed by GNOME — everything else lives under `src/` to make it clear what's an entry point and what's an internal module.
+- Relative paths always with explicit `.js` extension (ESM in GJS requires it).
 
-## Convenções de código
+## Code conventions
 
-### Nomeação e visibilidade
-- Public surface da classe: nomes sem prefixo (`destroy`, `state`, `setHideDistance`).
-- Privado: prefixo `_` (`_show`, `_isInLiveArea`, `_panelSize`).
-- Constantes top-level em UPPER_SNAKE agrupadas em objetos `Object.freeze({...})` por categoria (`SIZE`, `ANIM`, `TIMING`, `State`).
+### Naming and visibility
+- Class public surface: names with no prefix (`destroy`, `state`, `setHideDistance`).
+- Private: `_` prefix (`_show`, `_isInLiveArea`, `_panelSize`).
+- Top-level constants in UPPER_SNAKE grouped in `Object.freeze({...})` objects per category (`SIZE`, `ANIM`, `TIMING`, `State`).
 
-### Estado
-- Strings mágicas para estado (`'hidden'`, `'showing'`, etc.) **nunca soltas** — sempre via enum congelado (`State.HIDDEN`).
-- Comparações sempre contra a constante: `if (state === State.SHOWN)`.
+### State
+- Magic strings for state (`'hidden'`, `'showing'`, etc.) **never loose** — always via a frozen enum (`State.HIDDEN`).
+- Comparisons always against the constant: `if (state === State.SHOWN)`.
 
 ### Lifecycle
-- Toda classe que conecta signals, registra timeouts, ou aloca actors **deve ter `destroy()`** que limpe **tudo** que criou. Sem exceção.
-- `destroy()` é idempotente quando possível (checar `null` antes de destruir).
-- Trackers (`SignalTracker`, `TimeoutTracker`) preferíveis a campos `_xxxId` soltos — reduzem chance de vazamento ao adicionar nova conexão.
-- Em GNOME Shell, esquecer um `disconnect` ou `source_remove` causa: callbacks rodando após `disable()`, exceptions de actor destruído, e logs poluídos. **Cleanup é parte do contrato, não detalhe.**
+- Every class that connects signals, registers timeouts, or allocates actors **must have `destroy()`** that cleans up **everything** it created. No exceptions.
+- `destroy()` is idempotent when possible (check `null` before destroying).
+- Trackers (`SignalTracker`, `TimeoutTracker`) preferred over loose `_xxxId` fields — they reduce the chance of leaks when adding new connections.
+- In GNOME Shell, forgetting a `disconnect` or `source_remove` causes: callbacks running after `disable()`, exceptions from destroyed actors, and noisy logs. **Cleanup is part of the contract, not a detail.**
 
-### Animações Clutter
-- Sempre `actor.remove_all_transitions()` antes de iniciar uma nova `ease()` que pode entrar em conflito com a anterior.
-- Estado lógico (`_state`) muda em `onComplete` — não no momento de chamar `ease`. Isso evita que o estado divergeo do que o usuário está vendo.
-- Easing por contexto: `EASE_OUT_QUAD` para entrada (rápido no fim), `EASE_IN_QUAD` para saída (rápido no início).
+### Clutter animations
+- Always `actor.remove_all_transitions()` before starting a new `ease()` that may conflict with the previous one.
+- Logical state (`_state`) changes in `onComplete` — not at the moment of calling `ease`. This prevents state from diverging from what the user is seeing.
+- Easing per context: `EASE_OUT_QUAD` for entry (fast at the end), `EASE_IN_QUAD` for exit (fast at the start).
 
-### Layout / posicionamento
-- Para ler dimensão antes da allocation, usar `actor.get_preferred_height(forWidth)` / `get_preferred_width(forHeight)`. **Não confiar em `actor.height` ou `actor.width`** logo após adicionar children — retorna 0 ou stale.
-- Reposicionar em `notify::height` do panel (não em `idle_add`) — dispara automaticamente quando children mudam.
+### Layout / positioning
+- To read dimensions before allocation, use `actor.get_preferred_height(forWidth)` / `get_preferred_width(forHeight)`. **Do not rely on `actor.height` or `actor.width`** right after adding children — returns 0 or stale.
+- Reposition on the panel's `notify::height` (not in `idle_add`) — fires automatically when children change.
 
 ### Pointer / hover detection
-- `St.Widget` com `track_hover` + `notify::hover` é frágil para áreas pequenas em chrome (Wayland especialmente). Para auto-hide, **prefira polling via `GLib.timeout_add` + `global.get_pointer()`** com cálculo geométrico explícito da área de interesse — funciona em qualquer compositor, qualquer estado de fullscreen.
-- 100ms é cadência razoável (10Hz) — imperceptível para o usuário e baixíssimo overhead.
+- `St.Widget` with `track_hover` + `notify::hover` is fragile for small chrome areas (Wayland especially). For auto-hide, **prefer polling via `GLib.timeout_add` + `global.get_pointer()`** with explicit geometric calculation of the area of interest — works on any compositor, in any fullscreen state.
+- 100ms is a reasonable cadence (10Hz) — imperceptible to the user and very low overhead.
 
 ### Chrome (`Main.layoutManager.addChrome`)
-- `affectsInputRegion: true` — necessário para receber events com janelas maximizadas.
-- `affectsStruts: false` — não reservar área no workspace (é overlay, não dock fixo).
-- `trackFullscreen: true` — escondido automaticamente em apps fullscreen.
-- Sempre `removeChrome` antes de `destroy()` no actor.
+- `affectsInputRegion: true` — required to receive events with maximized windows.
+- `affectsStruts: false` — don't reserve workspace area (it's an overlay, not a fixed dock).
+- `trackFullscreen: true` — automatically hidden in fullscreen apps.
+- Always `removeChrome` before `destroy()` on the actor.
 
-### O que **não** fazer
-- Não usar `console.log` para output que precisa aparecer sempre — em algumas versões fica filtrado abaixo de `notice`. Use `console.warn` (warning level) ou `logError` para erros.
-- Não chamar `Edit`/`refresh` em loop sem early-return — refresh já agrega adds/removes idempotentemente, mas chamadas recursivas via signals podem causar loop.
-- Não usar `St.Widget` invisível como hot edge — pointer watcher é mais robusto.
-- Não esquecer `set_pivot_point` ao escalar (sem ele, o scale cresce a partir do top-left, não do centro/baixo).
+### What **not** to do
+- Don't use `console.log` for output that must always show — on some versions it's filtered below `notice`. Use `console.warn` (warning level) or `logError` for errors.
+- Don't call `Edit`/`refresh` in a loop without an early return — refresh already aggregates adds/removes idempotently, but recursive calls via signals can cause loops.
+- Don't use an invisible `St.Widget` as a hot edge — pointer watcher is more robust.
+- Don't forget `set_pivot_point` when scaling (without it, scale grows from the top-left, not from the center/bottom).
 
-## Testando uma mudança
+## Testing a change
 
-1. Editar `extension.js`.
+1. Edit `extension.js`.
 2. `Alt+F2 → r → Enter`.
-3. Conferir no journal: `journalctl --user -f -o cat _COMM=gnome-shell` — não deve haver `[ArcDock]` warnings/errors. Warnings de CSS shadow são pre-existentes (múltiplas shadows não suportadas em GNOME CSS).
+3. Check the journal: `journalctl --user -f -o cat _COMM=gnome-shell` — there should be no `[ArcDock]` warnings/errors. CSS shadow warnings are pre-existing (multiple shadows are not supported in GNOME CSS).
 4. Smoke test:
-   - Encostar mouse na borda inferior → dock anima subindo.
-   - Mover mouse para fora → após ~350ms desce.
-   - Click esquerdo num ícone → ativa app.
-   - Middle-click → fecha app.
-   - Hover num ícone → tooltip acima do ícone.
+   - Move the mouse to the bottom edge → dock animates up.
+   - Move the mouse away → after ~350ms it goes down.
+   - Left click on an icon → activates the app.
+   - Middle-click → closes the app.
+   - Hover an icon → tooltip above the icon.
 
-## Arquivos
+## Files
 
-- `extension.js` — entry point. Mantenha **fino**: só instanciamento e cleanup de `Dock`.
-- `src/*.js` — módulos por responsabilidade (ver árvore acima).
-- `stylesheet.css` — visual (gradiente translúcido, border, shadow). Inner highlight via `inset` + outer glow em uma única `box-shadow` com vírgulas (o GNOME CSS warna sobre múltiplas, é só warning).
+- `extension.js` — entry point. Keep it **thin**: only `Dock` instantiation and cleanup.
+- `src/*.js` — modules by responsibility (see tree above).
+- `stylesheet.css` — visuals (translucent gradient, border, shadow). Inner highlight via `inset` + outer glow in a single comma-separated `box-shadow` (GNOME CSS warns about multiples, it's just a warning).
 - `metadata.json` — UUID, version, GNOME shell-version compat.
 
-## Tunables (constantes em `src/config.js`)
+## Tunables (constants in `src/config.js`)
 
-| Constante | Default | O que faz |
+| Constant | Default | What it does |
 |---|---|---|
-| `SIZE.ICON` | 48 | px do ícone do app |
-| `SIZE.BOTTOM_MARGIN` | 12 | gap entre dock e borda inferior |
-| `SIZE.HOT_EDGE` | 4 | espessura da faixa que dispara show |
-| `SIZE.LIVE_BUFFER` | 8 | tolerância em px ao redor do dock visível antes de iniciar hide |
-| `ANIM.HOVER_SCALE` | 1 | mantido para cálculo de headroom; sem scale no hover |
-| `ANIM.HOVER_LIFT` | 0 | mantido para cálculo de headroom; sem lift no hover |
-| `ANIM.HOVER_IN_MS` / `HOVER_OUT_MS` | 140 / 120 | legado; hover visual atual usa tooltip sem scale/lift |
-| `ANIM.SHOW_MS` / `HIDE_MS` | 220 | duração das animações do dock |
-| `TIMING.POINTER_POLL_MS` | 100 | frequência do polling de pointer |
-| `TIMING.HIDE_DELAY_MS` | 350 | atraso antes de esconder após mouse sair |
+| `SIZE.ICON` | 48 | px of the app icon |
+| `SIZE.BOTTOM_MARGIN` | 12 | gap between dock and bottom edge |
+| `SIZE.HOT_EDGE` | 4 | thickness of the strip that triggers show |
+| `SIZE.LIVE_BUFFER` | 8 | px tolerance around the visible dock before starting hide |
+| `ANIM.HOVER_SCALE` | 1 | kept for headroom calculation; no scale on hover |
+| `ANIM.HOVER_LIFT` | 0 | kept for headroom calculation; no lift on hover |
+| `ANIM.HOVER_IN_MS` / `HOVER_OUT_MS` | 140 / 120 | legacy; current hover visual uses tooltip without scale/lift |
+| `ANIM.SHOW_MS` / `HIDE_MS` | 220 | duration of dock animations |
+| `TIMING.POINTER_POLL_MS` | 100 | pointer polling frequency |
+| `TIMING.HIDE_DELAY_MS` | 350 | delay before hiding after mouse leaves |
