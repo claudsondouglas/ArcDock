@@ -1,22 +1,22 @@
-# LiquidDock — instruções para Claude
+# ArcDock — instruções para Claude
 
 Extensão GNOME Shell minimalista (estilo macOS Tahoe) que mostra apenas apps em execução, com auto-hide, na borda inferior da tela primária.
 
 ## Como recarregar após editar JS
 
 - **Xorg (preferido para dev):** `Alt+F2` → `r` → `Enter`. Reinicia o gnome-shell e força reimport do módulo. Este é o caminho usado neste projeto.
-- **Wayland:** `gnome-extensions disable liquiddock@claudson; gnome-extensions enable liquiddock@claudson` *pode* funcionar, mas em GNOME 46+ o cache de módulos ESM frequentemente reusa o módulo em memória — JS edits ficam invisíveis. Se logs novos não aparecerem após enable, o único caminho confiável é logout/login.
+- **Wayland:** `gnome-extensions disable arcdock@claudson; gnome-extensions enable arcdock@claudson` *pode* funcionar, mas em GNOME 46+ o cache de módulos ESM frequentemente reusa o módulo em memória — JS edits ficam invisíveis. Se logs novos não aparecerem após enable, o único caminho confiável é logout/login.
 - CSS-only (`stylesheet.css`) recarrega junto com o shell. Não há truque mais barato confiável.
 
 ## Arquitetura
 
 ```
-extension.js              — entry point: LiquidDockExtension.enable/disable, instancia Dock.
+extension.js              — entry point: ArcDockExtension.enable/disable, instancia Dock.
 src/
 ├── config.js             — SIZE, ANIM, TIMING, State (constantes Object.freeze).
 ├── trackers.js           — SignalTracker, TimeoutTracker.
 ├── cursor.js             — helpers de cursor (setPointer/setDefault).
-├── iconAnimation.js      — attachHoverPress(button): hover lift+scale + press feedback.
+├── iconAnimation.js      — attachHoverPress(button): cursor + tooltip no hover.
 ├── dockIcon.js           — DockIcon (St.Button por app, click/middle-click).
 ├── showAppsIcon.js       — ShowAppsIcon (St.Button do menu, abre overview).
 ├── autoHide.js           — AutoHide (anima translation_y, polling de pointer).
@@ -78,13 +78,13 @@ Uma classe = um arquivo = uma responsabilidade. **Nada que precise de cleanup vi
 
 1. Editar `extension.js`.
 2. `Alt+F2 → r → Enter`.
-3. Conferir no journal: `journalctl --user -f -o cat _COMM=gnome-shell` — não deve haver `[liquiddock]` warnings/errors. Warnings de CSS shadow são pre-existentes (múltiplas shadows não suportadas em GNOME CSS).
+3. Conferir no journal: `journalctl --user -f -o cat _COMM=gnome-shell` — não deve haver `[ArcDock]` warnings/errors. Warnings de CSS shadow são pre-existentes (múltiplas shadows não suportadas em GNOME CSS).
 4. Smoke test:
    - Encostar mouse na borda inferior → dock anima subindo.
    - Mover mouse para fora → após ~350ms desce.
    - Click esquerdo num ícone → ativa app.
    - Middle-click → fecha app.
-   - Hover num ícone → escala 1.18x.
+   - Hover num ícone → tooltip acima do ícone.
 
 ## Arquivos
 
@@ -101,9 +101,9 @@ Uma classe = um arquivo = uma responsabilidade. **Nada que precise de cleanup vi
 | `SIZE.BOTTOM_MARGIN` | 12 | gap entre dock e borda inferior |
 | `SIZE.HOT_EDGE` | 4 | espessura da faixa que dispara show |
 | `SIZE.LIVE_BUFFER` | 8 | tolerância em px ao redor do dock visível antes de iniciar hide |
-| `ANIM.HOVER_SCALE` | 1.20 | escala do ícone em hover |
-| `ANIM.HOVER_LIFT` | -4 | translateY do ícone em hover (px, negativo = sobe) |
-| `ANIM.HOVER_IN_MS` / `HOVER_OUT_MS` | 140 / 120 | duração de entrada/saída de hover (saída mais rápida) |
+| `ANIM.HOVER_SCALE` | 1 | mantido para cálculo de headroom; sem scale no hover |
+| `ANIM.HOVER_LIFT` | 0 | mantido para cálculo de headroom; sem lift no hover |
+| `ANIM.HOVER_IN_MS` / `HOVER_OUT_MS` | 140 / 120 | legado; hover visual atual usa tooltip sem scale/lift |
 | `ANIM.SHOW_MS` / `HIDE_MS` | 220 | duração das animações do dock |
 | `TIMING.POINTER_POLL_MS` | 100 | frequência do polling de pointer |
 | `TIMING.HIDE_DELAY_MS` | 350 | atraso antes de esconder após mouse sair |

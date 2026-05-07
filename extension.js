@@ -5,17 +5,26 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Dock } from './src/dock.js';
 import { WakeWatcher } from './src/wakeWatcher.js';
 
-export default class LiquidDockExtension extends Extension {
+export default class ArcDockExtension extends Extension {
     enable() {
         try {
             this._enabled = true;
             this._restartSourceIds = new Set();
             this._signalConnections = [];
+            this._settings = this.getSettings();
             this._lastSessionMode = Main.sessionMode.currentMode;
             this._wakeWatcher = new WakeWatcher(() => this._scheduleDockRestart(1200, 'prepare-for-sleep'));
+            this._connectSignal(this._settings, 'changed::icon-size', () => {
+                log('[ArcDock] icon size changed');
+                this._restartDock('icon-size-changed');
+            });
+            this._connectSignal(this._settings, 'changed::running-dot-theme-color', () => {
+                log('[ArcDock] running dot color mode changed');
+                this._restartDock('running-dot-theme-color-changed');
+            });
             this._connectSignal(Main.sessionMode, 'updated', () => {
                 const mode = Main.sessionMode.currentMode;
-                log(`[MahoeDock] session mode updated: ${this._lastSessionMode} -> ${mode}`);
+                log(`[ArcDock] session mode updated: ${this._lastSessionMode} -> ${mode}`);
                 const wasLocked = this._isLockedMode(this._lastSessionMode);
                 const isLocked = this._isLockedMode(mode);
                 this._lastSessionMode = mode;
@@ -29,11 +38,11 @@ export default class LiquidDockExtension extends Extension {
                 }
             });
             this._connectSignal(Main.layoutManager, 'monitors-changed', () => {
-                log('[MahoeDock] monitors changed');
+                log('[ArcDock] monitors changed');
                 this._scheduleDockRestart(1200, 'monitors-changed');
             });
             this._connectSignal(Main.screenShield, 'wake-up-screen', () => {
-                log('[MahoeDock] screen wake-up detected');
+                log('[ArcDock] screen wake-up detected');
                 this._scheduleDockRepairSeries('screen-wake-up');
             });
             if (!this._isLockedMode(this._lastSessionMode)) {
@@ -41,22 +50,23 @@ export default class LiquidDockExtension extends Extension {
                 this._scheduleDockRepairSeries('enable');
             }
         } catch (e) {
-            logError(e, '[MahoeDock] enable() failed');
+            logError(e, '[ArcDock] enable() failed');
             throw e;
         }
     }
 
     disable() {
         try {
-            log('[MahoeDock] disable');
+            log('[ArcDock] disable');
             this._enabled = false;
             this._cancelDockRestarts();
             this._disconnectSignals();
             this._wakeWatcher?.destroy();
             this._wakeWatcher = null;
             this._destroyDock();
+            this._settings = null;
         } catch (e) {
-            logError(e, '[MahoeDock] disable() failed');
+            logError(e, '[ArcDock] disable() failed');
         }
     }
 
@@ -68,7 +78,7 @@ export default class LiquidDockExtension extends Extension {
             const id = obj.connect(signal, handler);
             this._signalConnections.push({ obj, id });
         } catch (e) {
-            logError(e, `[MahoeDock] failed to connect signal ${signal}`);
+            logError(e, `[ArcDock] failed to connect signal ${signal}`);
         }
     }
 
@@ -84,11 +94,17 @@ export default class LiquidDockExtension extends Extension {
     }
 
     _createDock() {
-        this._dock = new Dock();
-        log('[MahoeDock] dock created');
+        this._dock = new Dock({
+            iconSize: this._settings?.get_int('icon-size'),
+            useThemeRunningDotColor:
+                this._settings?.get_boolean('running-dot-theme-color') ?? false,
+        });
+        log('[ArcDock] dock created');
     }
 
     _ensureDock() {
+        if (this._isLockedMode(Main.sessionMode.currentMode))
+            return;
         if (!this._dock)
             this._createDock();
     }
@@ -97,7 +113,7 @@ export default class LiquidDockExtension extends Extension {
         try {
             this._dock?.destroy();
         } catch (e) {
-            logError(e, '[MahoeDock] dock destroy failed');
+            logError(e, '[ArcDock] dock destroy failed');
         }
         this._dock = null;
     }
@@ -129,9 +145,13 @@ export default class LiquidDockExtension extends Extension {
     _restartDock(reason) {
         if (!this._enabled)
             return;
+        if (this._isLockedMode(Main.sessionMode.currentMode)) {
+            this._destroyDock();
+            return;
+        }
 
         this._destroyDock();
         this._createDock();
-        log(`[MahoeDock] dock restarted after ${reason}`);
+        log(`[ArcDock] dock restarted after ${reason}`);
     }
 }

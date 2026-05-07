@@ -1,6 +1,6 @@
-/* LiquidDock — macOS Tahoe "Liquid Glass".
+/* ArcDock — translucent dock inspired by macOS Tahoe.
  *
- * Liquid Glass has THREE visual layers on the rim, not one solid border:
+ * The translucent rim has THREE visual layers, not one solid border:
  *   1. A bright top edge — the light refracted through the upper bevel.
  *   2. A subtle bottom edge — interior shadow under the lower bevel.
  *   3. Soft side rims — gentle highlights that connect top and bottom.
@@ -11,9 +11,10 @@
  * which is enough to fake the multi-tone glass rim below.
  */
 
-.liquiddock-panel {
+.arcdock-panel {
     spacing: 4px;
     padding: 4px 4px;
+    padding-bottom: 0px;
     border-radius: 18px;
 
     /* Glass body: top brighter for the inner top-edge highlight,
@@ -35,36 +36,85 @@
     box-shadow: 0 14px 36px 0 rgba(0, 0, 0, 0.28);
 }
 
-.liquiddock-icon,
-.liquiddock-icon:hover,
-.liquiddock-icon:active,
-.liquiddock-icon:focus,
-.liquiddock-icon:checked,
-.liquiddock-icon:insensitive {
+.arcdock-icon,
+.arcdock-icon:hover,
+.arcdock-icon:active,
+.arcdock-icon:focus,
+.arcdock-icon:focus:hover,
+.arcdock-icon:checked,
+.arcdock-icon:checked:hover,
+.arcdock-icon:selected,
+.arcdock-icon:outlined,
+.arcdock-icon:insensitive {
     padding: 2px;
     background: none;
     background-color: transparent;
     background-image: none;
-    background-gradient-direction: none;
+    background-gradient-direction: vertical;
+    background-gradient-start: transparent;
+    background-gradient-end: transparent;
     border: none;
     border-image: none;
+    border-radius: 14px;
     box-shadow: none;
-    transition-duration: 200ms;
+    outline: none;
+    transition-duration: 0ms;
+    transition-property: none;
 }
 
-.liquiddock-menu-icon {
+.arcdock-menu-icon {
     color: rgba(255, 255, 255, 0.95);
 }
 
-.liquiddock-icon-texture {
-    icon-size: 56px;
+.arcdock-icon-host {
+    background-color: transparent;
+    box-shadow: none;
+    transition-duration: 0ms;
+    transition-property: none;
 }
 
-.liquiddock-menu-icon-symbolic {
-    icon-size: 56px;
+.arcdock-running-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background-color: rgba(25, 25, 25, 0.92);
+    box-shadow: 0 1px 2px 0 rgba(255, 255, 255, 0.25);
 }
 
-.liquiddock-drop-indicator {
+.arcdock-attention-dot {
+    border-radius: 999px;
+    background-color: rgb(238, 64, 64);
+    border: 1.5px solid rgba(255, 255, 255, 0.95);
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.35);
+}
+
+.arcdock-menu-dot {
+    background-color: rgba(25, 25, 25, 0);
+    box-shadow: none;
+}
+
+.arcdock-tooltip {
+    spacing: 0;
+}
+
+.arcdock-tooltip-label {
+    padding: 5px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 12px;
+    font-weight: 500;
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.25);
+}
+
+
+.arcdock-icon-stage {
+    background-color: transparent;
+    box-shadow: none;
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+.arcdock-drop-indicator {
     background-color: rgba(255, 255, 255, 0.18);
     border: 2px dashed rgba(255, 255, 255, 0.55);
     border-radius: 12px;

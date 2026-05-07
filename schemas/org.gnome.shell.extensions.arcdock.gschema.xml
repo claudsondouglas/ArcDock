@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.arcdock" path="/org/gnome/shell/extensions/arcdock/">
+    <key name="icon-size" type="i">
+      <default>56</default>
+      <range min="32" max="96"/>
+      <summary>Icon size</summary>
+      <description>Size of dock icons in pixels.</description>
+    </key>
+    <key name="running-dot-theme-color" type="b">
+      <default>false</default>
+      <summary>Use theme color for running dot</summary>
+      <description>If true, the running dot uses the system theme foreground color. Otherwise, uses the default dock color.</description>
+    </key>
+  </schema>
+</schemalist>

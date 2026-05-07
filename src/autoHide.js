@@ -17,6 +17,7 @@ export class AutoHide {
         this._hideDistance = 0;
         this._hideTimeoutId = 0;
         this._forceHidden = false;
+        this._forceShown = false;
         this._timeouts = new TimeoutTracker();
 
         this._container.hide();
@@ -35,6 +36,15 @@ export class AutoHide {
 
     hideNow() {
         this._hide();
+    }
+
+    setForceShown(forced) {
+        this._forceShown = forced;
+        if (forced) {
+            this._cancelHide();
+            if (this._state === State.HIDDEN || this._state === State.HIDING)
+                this._show();
+        }
     }
 
     setForceHidden(forced) {
@@ -61,6 +71,13 @@ export class AutoHide {
     _tick(x, y) {
         if (this._forceHidden)
             return;
+
+        if (this._forceShown) {
+            this._cancelHide();
+            if (this._state === State.HIDDEN || this._state === State.HIDING)
+                this._show();
+            return;
+        }
 
         if (!this._shouldHideProvider()) {
             this._cancelHide();

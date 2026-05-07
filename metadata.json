@@ -1,9 +1,10 @@
 {
-  "uuid": "MahoeDock@claudson",
-  "name": "MahoeDock",
+  "uuid": "ArcDock@claudson",
+  "name": "ArcDock",
   "description": "Minimal Style dock — simple, i just find nothing and make my own.",
   "shell-version": ["46"],
   "session-modes": ["user", "zorin", "unlock-dialog"],
+  "settings-schema": "org.gnome.shell.extensions.arcdock",
   "url": "",
   "version": 1
 }

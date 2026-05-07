@@ -6,8 +6,8 @@ export const SIZE = Object.freeze({
 });
 
 export const ANIM = Object.freeze({
-  HOVER_SCALE: 1.2,
-  HOVER_LIFT: -4,
+  HOVER_SCALE: 1,
+  HOVER_LIFT: 0,
   HOVER_IN_MS: 140,
   HOVER_OUT_MS: 120,
   SHOW_MS: 220,

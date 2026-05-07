@@ -13,18 +13,33 @@ import { ShowAppsIcon } from "./showAppsIcon.js";
 import { OverviewDashHider } from "./overviewDashHider.js";
 import { AutoHide } from "./autoHide.js";
 import { InputCatcher } from "./inputCatcher.js";
+import { PinnedAppsStore } from "./pinnedAppsStore.js";
 import * as Cursor from "./cursor.js";
 import { applyGlass } from "./glassEffect.js";
+import { resetHoverPress } from "./iconAnimation.js";
+import { AttentionTracker } from "./attentionTracker.js";
 
 export class Dock {
-  constructor() {
+  constructor(params = {}) {
     this._appSystem = Shell.AppSystem.get_default();
+    this._pinnedApps = new PinnedAppsStore();
+    this._size = {
+      ...SIZE,
+      ICON: params.iconSize ?? SIZE.ICON,
+    };
+    this._useThemeRunningDotColor = !!params.useThemeRunningDotColor;
     this._icons = new Map();
     this._iconOrder = [];
+    this._watchedWindows = new Set();
     this._signals = new SignalTracker();
+    // SignalTracker dedicado para 'windows-changed' por app — re-bound a
+    // cada _refresh() pra acompanhar a lista atual de apps rodando.
+    this._appWindowSignals = new SignalTracker();
     this._panelSize = { w: 0, h: 0 };
     this._showAppsIcon = null;
     this._overviewDashHider = new OverviewDashHider();
+    this._attentionTracker = new AttentionTracker();
+    this._attentionTracker.addListener(() => this._notifyAttention());
 
     this._container = new St.Bin({
       x_align: Clutter.ActorAlign.CENTER,
@@ -39,7 +54,7 @@ export class Dock {
     this._container.connect("button-release-event", () => Clutter.EVENT_STOP);
 
     this._panel = new St.BoxLayout({
-      style_class: "liquiddock-panel",
+      style_class: "arcdock-panel",
       vertical: false,
       reactive: true,
       track_hover: true,
@@ -52,7 +67,7 @@ export class Dock {
     this._appsBox._delegate = this;
     this._panel.add_child(this._appsBox);
 
-    this._showAppsIcon = new ShowAppsIcon();
+    this._showAppsIcon = new ShowAppsIcon({ iconSize: this._size.ICON });
     this._panel.add_child(this._showAppsIcon);
 
     Main.layoutManager.addChrome(this._container, {
@@ -124,12 +139,15 @@ export class Dock {
     safe(() => this._autoHide?.destroy());
     this._autoHide = null;
     safe(() => this._signals.disconnectAll());
+    safe(() => this._appWindowSignals.disconnectAll());
     for (const icon of this._icons.values()) safe(() => icon.destroy());
     this._icons.clear();
     safe(() => this._showAppsIcon?.destroy());
     this._showAppsIcon = null;
     safe(() => this._overviewDashHider?.destroy());
     this._overviewDashHider = null;
+    safe(() => this._attentionTracker?.destroy());
+    this._attentionTracker = null;
     safe(() => this._inputCatcher?.destroy());
     this._inputCatcher = null;
     safe(() => {
@@ -142,22 +160,80 @@ export class Dock {
   }
 
   _refresh() {
-    const entries = [];
-    for (const app of this._appSystem.get_running()) {
+    // Reescuta 'windows-changed' em todos os apps rodando. Esse é o
+    // signal que dispara quando o WindowTracker termina de associar uma
+    // janela recém-criada ao seu Shell.App — sem isso, o dot só aparece
+    // depois de outro signal coincidir (workspace change, focus, etc).
+    this._appWindowSignals.disconnectAll();
+    const runningApps = this._appSystem.get_running();
+    for (const app of runningApps) {
+      this._appWindowSignals.connect(app, "windows-changed", () =>
+        this._refresh(),
+      );
+    }
+
+    const windowsByApp = new Map();
+    for (const app of runningApps) {
       for (const window of app.get_windows()) {
         if (window.is_skip_taskbar()) continue;
         if (window.get_window_type() !== Meta.WindowType.NORMAL) continue;
-        entries.push({ window, app });
+        this._watchWindow(window);
+        const appId = app.get_id();
+        if (!windowsByApp.has(appId)) windowsByApp.set(appId, []);
+        windowsByApp.get(appId).push({ window, app });
       }
+    }
+    for (const windows of windowsByApp.values())
+      windows.sort((a, b) => this._windowSortKey(b.window) - this._windowSortKey(a.window));
+
+    const entries = [];
+    const pinnedAppIds = this._pinnedApps.list();
+    const pinnedSet = new Set(pinnedAppIds);
+    for (const appId of pinnedAppIds) {
+      const app = this._appSystem.lookup_app(appId);
+      if (!app) continue;
+      const runningWindows = windowsByApp.get(appId) ?? [];
+      const running = runningWindows[0] ?? {};
+      entries.push({
+        id: this._appIconId(appId),
+        window: running.window ?? null,
+        windows: runningWindows.map(({ window }) => window),
+        app,
+        pinned: true,
+        running: !!running.window,
+      });
+    }
+
+    for (const windows of windowsByApp.values()) {
+      const { window, app } = windows[0];
+      const appId = app.get_id();
+      if (pinnedSet.has(appId)) continue;
+      entries.push({
+        id: this._appIconId(appId),
+        window,
+        windows: windows.map(({ window }) => window),
+        app,
+        pinned: false,
+        running: true,
+      });
     }
 
     const seen = new Set();
-    for (const { window, app } of entries) {
-      const id = window.get_stable_sequence();
+    for (const { id, window, windows, app, pinned, running } of entries) {
       seen.add(id);
       if (!this._icons.has(id)) {
-        this._signals.connect(window, "unmanaged", () => this._refresh());
-        const icon = new DockIcon(window, app);
+        const icon = new DockIcon(window, app, {
+          id,
+          iconSize: this._size.ICON,
+          windows,
+          pinned,
+          running,
+          useThemeRunningDotColor: this._useThemeRunningDotColor,
+          onTogglePinned: (source) => this._togglePinned(source.app),
+          onMenuStateChanged: (isOpen) =>
+            this._autoHide?.setForceShown(isOpen),
+          attentionTracker: this._attentionTracker,
+        });
         this._signals.connect(icon._draggable, "drag-begin", () =>
           this._suppressHover(),
         );
@@ -171,6 +247,8 @@ export class Dock {
         });
         this._icons.set(id, icon);
         this._appsBox.add_child(icon);
+      } else {
+        this._icons.get(id).setTarget(window, windows, app, pinned, running);
       }
     }
     for (const [id, icon] of this._icons) {
@@ -181,15 +259,53 @@ export class Dock {
     }
     this._syncOrder(seen);
     this._applyOrder();
+    this._syncAppsBoxVisibility();
     this._reposition();
+  }
+
+  _watchWindow(window) {
+    const id = window.get_stable_sequence();
+    if (this._watchedWindows.has(id)) return;
+    this._watchedWindows.add(id);
+    this._signals.connect(window, "unmanaged", () => {
+      this._watchedWindows.delete(id);
+      this._refresh();
+    });
+  }
+
+  _notifyAttention() {
+    for (const icon of this._icons.values())
+      icon.refreshAttention?.();
+  }
+
+  _togglePinned(app) {
+    const appId = app.get_id();
+    if (!appId) return;
+    this._pinnedApps.toggle(appId);
+    this._refresh();
+  }
+
+  _appIconId(appId) {
+    return `app:${appId}`;
+  }
+
+  _windowSortKey(window) {
+    if (typeof window.get_user_time === "function") {
+      const userTime = window.get_user_time();
+      if (userTime) return userTime;
+    }
+    return window.get_stable_sequence();
+  }
+
+  _syncAppsBoxVisibility() {
+    this._appsBox.visible = this._icons.size > 0;
   }
 
   _syncOrder(currentIds) {
     this._iconOrder = this._iconOrder.filter((id) => currentIds.has(id));
     const inOrder = new Set(this._iconOrder);
     const newIds = [...currentIds]
-      .filter((id) => !inOrder.has(id))
-      .sort((a, b) => a - b);
+      .filter((id) => !inOrder.has(id));
     this._iconOrder.push(...newIds);
   }
 
@@ -219,10 +335,9 @@ export class Dock {
 
   acceptDrop(source, _actor, x) {
     if (!(source instanceof DockIcon)) return false;
-    const sourceId = source.window.get_stable_sequence();
     const targetIndex = this._dropIndexAt(x);
     this._hideDropIndicator();
-    this._reorder(sourceId, targetIndex);
+    this._reorder(source.id, targetIndex);
     return true;
   }
 
@@ -230,10 +345,7 @@ export class Dock {
     const targets = [...this._icons.values()];
     if (this._showAppsIcon) targets.push(this._showAppsIcon);
     for (const a of targets) {
-      a.remove_all_transitions();
-      a.scale_x = 1;
-      a.scale_y = 1;
-      a.translation_y = 0;
+      resetHoverPress(a);
       a.track_hover = false;
     }
     Cursor.setDefault();
@@ -247,10 +359,15 @@ export class Dock {
 
   _showDropIndicator() {
     if (this._dropIndicator) return;
+    // y_expand:false + y_align:CENTER impede que o BoxLayout estique o
+    // indicador para a altura total do ícone (que inclui o espaço do
+    // running dot abaixo), mantendo-o como um quadrado perfeito.
     this._dropIndicator = new St.Widget({
-      style_class: "liquiddock-drop-indicator",
-      width: SIZE.ICON,
-      height: SIZE.ICON,
+      style_class: "arcdock-drop-indicator",
+      width: this._size.ICON,
+      height: this._size.ICON,
+      y_expand: false,
+      y_align: Clutter.ActorAlign.START,
     });
     this._appsBox.add_child(this._dropIndicator);
   }
@@ -302,14 +419,11 @@ export class Dock {
     if (!monitor) return;
 
     const [, naturalH] = this._panel.get_preferred_height(monitor.width);
-    const h = Math.max(naturalH, SIZE.ICON + 24);
+    const h = Math.max(naturalH, this._size.ICON + 24);
     const [, naturalW] = this._panel.get_preferred_width(h);
 
-    // Headroom acima do panel: cobre o lift + scale do hover dos ícones,
-    // garantindo que o input region da chrome (que usa allocation, não
-    // transforms) inclua a área visual do ícone quando estiver lifted.
-    // Sem isso, cliques no topo do ícone hovered passam pra janela atrás.
-    // Usa h (altura real do panel, com padding) em vez de SIZE.ICON.
+    // Headroom acima do panel: mantém espaço para affordances de hover
+    // renderizadas fora do panel, como tooltip.
     const headroom =
       Math.abs(ANIM.HOVER_LIFT) + Math.ceil((ANIM.HOVER_SCALE - 1) * h) + 8;
     const totalH = h + headroom;
@@ -321,7 +435,11 @@ export class Dock {
       monitor.y + monitor.height - totalH - SIZE.BOTTOM_MARGIN,
     );
     this._autoHide.setHideDistance(h + SIZE.BOTTOM_MARGIN);
-    this._inputCatcher?.fitToMonitor();
+    this._inputCatcher?.fitBelow(
+      monitor.x + (monitor.width - naturalW) / 2,
+      monitor.y + monitor.height - h - SIZE.BOTTOM_MARGIN - 4,
+      naturalW,
+    );
     this._raiseToTop();
     Main.layoutManager.queueUpdateRegions?.();
   }
@@ -374,8 +492,8 @@ export class Dock {
     };
   }
 
-  _updateInputCatcher(hasWindow) {
-    if (this._container.visible && hasWindow) this._inputCatcher.show();
+  _updateInputCatcher(_hasWindow) {
+    if (this._container.visible) this._inputCatcher.show();
     else this._inputCatcher.hide();
   }
 

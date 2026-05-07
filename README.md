@@ -1,18 +1,17 @@
-# MahoeDock
+# ArcDock
 
 Uma tentativa de trazer o visual do **Dock do macOS Tahoe** para o GNOME Shell.
 
 Extensão minimalista escrita do zero, focada em recriar a sensação do dock da
-Apple — vidro fosco, ícones que levantam ao passar o mouse, aparição suave
+Apple — vidro fosco, tooltip no hover, aparição suave
 quando o cursor toca a borda inferior — usando apenas as APIs nativas do
 GNOME Shell (Clutter, St, Shell.BlurEffect).
 
 ## Características
 
 - **Auto-hide** com hot-edge na borda inferior e polling de cursor.
-- **Liquid glass** via `Shell.BlurEffect` em modo background.
-- **Hover lift + scale** dos ícones com easing `EASE_OUT_QUART` (assimétrico:
-  entrada mais suave, saída mais rápida).
+- **Vidro translúcido** via `Shell.BlurEffect` em modo background.
+- **Tooltip no hover** acima dos ícones, sem scale/lift.
 - **Apenas apps em execução** — sem favoritos fixos, similar ao comportamento
   padrão do dock do macOS.
 - **Botão Show Apps** que abre o app grid do overview.
@@ -25,18 +24,55 @@ GNOME Shell (Clutter, St, Shell.BlurEffect).
 
 ## Instalação
 
-```bash
-git clone git@github.com:claudsondouglas/mahoedock.git \
-  ~/.local/share/gnome-shell/extensions/MahoeDock@claudson
-```
+### 1. Clone o repositório no diretório de extensões do GNOME
 
-Ative com:
+O nome da pasta **precisa** ser exatamente `ArcDock@claudson` (é o UUID declarado em `metadata.json`):
 
 ```bash
-gnome-extensions enable MahoeDock@claudson
+git clone https://github.com/claudsondouglas/ArcDock.git \
+  ~/.local/share/gnome-shell/extensions/ArcDock@claudson
 ```
 
-No Wayland: faça logout/login. No Xorg: `Alt+F2 → r → Enter`.
+> Se preferir SSH: `git@github.com:claudsondouglas/ArcDock.git`.
+
+### 2. Recarregue o GNOME Shell
+
+Para que o shell descubra a nova extensão:
+
+- **Xorg:** `Alt+F2`, digite `r`, `Enter`.
+- **Wayland:** logout e login novamente (não há reload do shell em runtime).
+
+### 3. Ative a extensão
+
+```bash
+gnome-extensions enable ArcDock@claudson
+```
+
+Ou pelo app **Extensions** (`gnome-extensions-app`) — procure por *ArcDock* e ligue o switch.
+
+### 4. Verifique
+
+Encoste o cursor na borda inferior da tela primária — o dock deve subir suavemente. Se nada acontecer, confira o journal:
+
+```bash
+journalctl --user -f -o cat _COMM=gnome-shell | grep -i arcdock
+```
+
+### Atualizar
+
+```bash
+cd ~/.local/share/gnome-shell/extensions/ArcDock@claudson
+git pull
+```
+
+Depois recarregue o shell (passo 2).
+
+### Desinstalar
+
+```bash
+gnome-extensions disable ArcDock@claudson
+rm -rf ~/.local/share/gnome-shell/extensions/ArcDock@claudson
+```
 
 ## Status
 

@@ -15,14 +15,14 @@ export class WakeWatcher {
         this._signalId = this._loginManager.connect(
             'prepare-for-sleep',
             (_lm, aboutToSuspend) => {
-                log(`[MahoeDock] prepare-for-sleep: ${aboutToSuspend}`);
+                log(`[ArcDock] prepare-for-sleep: ${aboutToSuspend}`);
                 this._scheduleResumeReconcile(aboutToSuspend);
             },
         );
     }
 
     _scheduleResumeReconcile(aboutToSuspend = false) {
-        log(`[MahoeDock] resume reconcile scheduled from prepare-for-sleep=${aboutToSuspend}`);
+        log(`[ArcDock] resume reconcile scheduled from prepare-for-sleep=${aboutToSuspend}`);
         this._clearResumeTimeouts();
 
         if (!aboutToSuspend) {
@@ -50,7 +50,7 @@ export class WakeWatcher {
         try {
             this._onResume?.();
         } catch (e) {
-            logError(e, '[MahoeDock] resume reconcile failed');
+            logError(e, '[ArcDock] resume reconcile failed');
         }
     }
 

@@ -30,12 +30,14 @@ export class InputCatcher {
         this._actor.hide();
     }
 
-    fitToMonitor() {
+    fitBelow(x, topY, width) {
         const monitor = Main.layoutManager.primaryMonitor;
         if (!monitor)
             return;
-        this._actor.set_position(monitor.x, monitor.y);
-        this._actor.set_size(monitor.width, monitor.height);
+        const y = Math.max(monitor.y, Math.round(topY));
+        const bottom = monitor.y + monitor.height;
+        this._actor.set_position(Math.round(x), y);
+        this._actor.set_size(Math.round(width), Math.max(0, bottom - y));
     }
 
     placeBelow(sibling) {
