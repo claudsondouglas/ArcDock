@@ -24,6 +24,38 @@ export default class ArcDockExtension extends Extension {
                 log('[ArcDock] running dot color mode changed');
                 this._restartDock('running-dot-theme-color-changed');
             });
+            this._connectSignal(this._settings, 'changed::running-indicator-style', () => {
+                log('[ArcDock] running indicator style changed');
+                this._restartDock('running-indicator-style-changed');
+            });
+            this._connectSignal(this._settings, 'changed::dock-theme', () => {
+                log('[ArcDock] dock theme changed');
+                this._restartDock('dock-theme-changed');
+            });
+            this._connectSignal(this._settings, 'changed::click-to-minimize', () => {
+                log('[ArcDock] click-to-minimize changed');
+                this._restartDock('click-to-minimize-changed');
+            });
+            this._connectSignal(this._settings, 'changed::show-apps-button', () => {
+                log('[ArcDock] show-apps-button changed');
+                this._restartDock('show-apps-button-changed');
+            });
+            this._connectSignal(this._settings, 'changed::show-recent-apps', () => {
+                log('[ArcDock] show-recent-apps changed');
+                this._restartDock('show-recent-apps-changed');
+            });
+            this._connectSignal(this._settings, 'changed::magnification-enabled', () => {
+                log('[ArcDock] magnification-enabled changed');
+                this._restartDock('magnification-enabled-changed');
+            });
+            this._connectSignal(this._settings, 'changed::magnification-scale', () => {
+                log('[ArcDock] magnification-scale changed');
+                this._restartDock('magnification-scale-changed');
+            });
+            this._connectSignal(this._settings, 'changed::magnification-falloff', () => {
+                log('[ArcDock] magnification-falloff changed');
+                this._restartDock('magnification-falloff-changed');
+            });
             this._connectSignal(Main.sessionMode, 'updated', () => {
                 try {
                     const mode = Main.sessionMode.currentMode;
@@ -111,9 +143,28 @@ export default class ArcDockExtension extends Extension {
 
     _createDock() {
         this._dock = new Dock({
+            settings: this._settings,
             iconSize: this._settings?.get_int('icon-size'),
             useThemeRunningDotColor:
                 this._settings?.get_boolean('running-dot-theme-color') ?? false,
+            indicatorStyle:
+                this._settings?.get_string('running-indicator-style') ?? 'dot',
+            theme:
+                this._settings?.get_string('dock-theme') ?? 'light',
+            clickToMinimize:
+                this._settings?.get_boolean('click-to-minimize') ?? true,
+            showAppsButton:
+                this._settings?.get_boolean('show-apps-button') ?? true,
+            showRecentApps:
+                this._settings?.get_boolean('show-recent-apps') ?? true,
+            magnification: {
+                enabled:
+                    this._settings?.get_boolean('magnification-enabled') ?? false,
+                scale:
+                    this._settings?.get_double('magnification-scale') ?? 1.5,
+                falloff:
+                    this._settings?.get_int('magnification-falloff') ?? 150,
+            },
         });
         log('[ArcDock] dock created');
     }

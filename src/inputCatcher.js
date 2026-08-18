@@ -23,7 +23,6 @@ export class InputCatcher {
         this._actor.connect('button-release-event', () => Clutter.EVENT_STOP);
 
         Main.layoutManager.addChrome(this._actor, {
-            affectsInputRegion: true,
             affectsStruts: false,
             trackFullscreen: false,
         });

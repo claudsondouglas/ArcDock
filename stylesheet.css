@@ -15,25 +15,38 @@
     spacing: 4px;
     padding: 4px 4px;
     padding-bottom: 0px;
-    border-radius: 18px;
+    /* Precisa acompanhar SIZE.PANEL_RADIUS em src/config.js. */
+    border-radius: 24px;
 
-    /* Glass body: top brighter for the inner top-edge highlight,
-     * bottom subtler so the wallpaper reads through the lower half. */
+    /* Glass body: bem mais translúcido que uma "milk glass" — o frosted
+     * do macOS deixa o wallpaper atravessar e conta com o blur (mais
+     * forte, ver glassEffect.js) para manter os ícones legíveis. O leve
+     * gradiente vertical é o que resta do highlight interno do topo. */
     background-gradient-direction: vertical;
-    background-gradient-start: rgba(255, 255, 255, 0.42);
-    background-gradient-end: rgba(255, 255, 255, 0.22);
+    background-gradient-start: rgba(255, 255, 255, 0.36);
+    background-gradient-end: rgba(255, 255, 255, 0.20);
 
-    /* Multi-tone rim — the SIDES are the brightest (curved bevels
-     * refract more light than the flat top), the top is moderate, the
-     * bottom is the dimmest. This matches Tahoe's Liquid Glass where
-     * the side rims read almost like a halo around the dock. */
-    border-top: 1px solid rgba(255, 255, 255, 0.45);
-    border-left: 1px solid rgba(255, 255, 255, 0.8);
-    border-right: 1px solid rgba(255, 255, 255, 0.8);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.25);
+    /* Hairline rim à la macOS: fino e quase uniforme. O topo é o mais
+     * claro (pega a luz), as laterais um pouco menos, a base quase some.
+     * Alphas altos nas laterais liam como MOLDURA, não como refração. */
+    border-top: 1px solid rgba(255, 255, 255, 0.55);
+    border-left: 1px solid rgba(255, 255, 255, 0.38);
+    border-right: 1px solid rgba(255, 255, 255, 0.38);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.16);
 
-    /* Outer shadow for depth. */
-    box-shadow: 0 14px 36px 0 rgba(0, 0, 0, 0.28);
+    /* Outer shadow: mais difusa e mais baixa que antes — a do macOS é
+     * um halo suave, não uma sombra dura de elevação. */
+    box-shadow: 0 10px 32px 0 rgba(0, 0, 0, 0.32);
+}
+
+/* Actor que carrega o Shell.BlurEffect, recuado para dentro do painel
+ * (BLUR_INSET em config.js). Não pinta nada por conta própria — só
+ * existe para dar ao blur um retângulo que caiba nos cantos redondos. */
+.arcdock-blur-backdrop {
+    background-color: transparent;
+    /* PANEL_RADIUS - BLUR_INSET (24 - 8): o canto do retângulo interno
+     * segue o arco do painel sem escapar dele. */
+    border-radius: 16px;
 }
 
 .arcdock-icon,
@@ -66,11 +79,43 @@
     color: rgba(255, 255, 255, 0.95);
 }
 
+/* `color` só pinta a variante symbolic — é o fallback para temas de
+ * ícone que não trazem o "view-app-grid" fullcolor (o Launchpad dos
+ * temas estilo macOS). Nada de -st-icon-style aqui: forçar symbolic
+ * descartaria justamente o ícone colorido que a dock quer mostrar. */
+.arcdock-menu-icon-texture {
+    color: rgba(255, 255, 255, 0.95);
+}
+
+/* Nenhuma textura de ícone desenha fundo/rim próprio — o que aparece
+ * atrás do ícone é sempre o vidro do painel, nunca uma caixa. */
+.arcdock-icon-texture {
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+}
+
 .arcdock-icon-host {
     background-color: transparent;
     box-shadow: none;
     transition-duration: 0ms;
     transition-property: none;
+}
+
+.arcdock-running-indicator {
+    /* Sem padding/margem: o DockIcon posiciona o container a partir da
+       largura que ele mesmo calcula para os pips. */
+    padding: 0;
+    margin: 0;
+    background-color: transparent;
+}
+
+.arcdock-indicator-bar {
+    border-radius: 999px;
+    background-color: rgba(25, 25, 25, 0.92);
+    box-shadow: 0 1px 2px 0 rgba(255, 255, 255, 0.25);
 }
 
 .arcdock-running-dot {
@@ -97,6 +142,11 @@
     spacing: 0;
 }
 
+/* Cores explícitas (e não as herdadas de popup-menu-content) porque o
+ * bubble segue o tema da DOCK, não o do shell: com um shell escuro e a
+ * dock clara, o tooltip herdado sairia escuro. A seta é pintada em
+ * Cairo lendo o background já resolvido do label (ver iconAnimation.js),
+ * então basta trocar a cor aqui para que ela acompanhe. */
 .arcdock-tooltip-label {
     margin: 0;
     min-height: 0;
@@ -105,6 +155,8 @@
     border-radius: 8px;
     font-size: 12px;
     font-weight: 500;
+    background-color: rgba(250, 250, 252, 0.96);
+    color: rgba(24, 24, 26, 0.95);
     box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.25);
 }
 
@@ -116,8 +168,97 @@
     transition-property: none;
 }
 
+/* Divisor entre a seção principal e os "abertos recentemente". Preto
+ * translúcido no tema claro: o vidro claro já é branco por dentro, e um
+ * fio branco sobre ele desapareceria — o que lê como separação aqui é a
+ * sombra, não o brilho. Largura e altura vêm do Dock (RECENT.SEPARATOR_*
+ * em config.js), que precisa delas para centrar o fio. */
+.arcdock-separator {
+    background-color: rgba(0, 0, 0, 0.20);
+    border-radius: 999px;
+}
+
 .arcdock-drop-indicator {
     background-color: rgba(255, 255, 255, 0.18);
     border: 2px dashed rgba(255, 255, 255, 0.55);
     border-radius: 12px;
+}
+
+/* ------------------------------------------------------------------
+ * Tema escuro
+ *
+ * Só OVERRIDES: o Dock adiciona .arcdock-panel-dark ao painel além de
+ * .arcdock-panel, então tudo que não aparece aqui continua vindo do tema
+ * claro acima. Os filhos são alcançados por seletor descendente (St
+ * suporta), o que dispensa carimbar classe em cada pip.
+ * ------------------------------------------------------------------ */
+
+.arcdock-panel.arcdock-panel-dark {
+    /* Espelho do vidro claro, com mais alpha: vidro escuro precisa de
+     * mais corpo que o claro para continuar lendo como ESCURO sobre um
+     * wallpaper claro — com o alpha do claro ele viraria só cinza. */
+    background-gradient-start: rgba(28, 28, 32, 0.50);
+    background-gradient-end: rgba(22, 22, 26, 0.38);
+
+    /* O rim branco quase some no dark mode do macOS: sobra um fio no
+     * topo pegando a luz e um sussurro nas laterais. Alphas de tema
+     * claro aqui desenhariam uma moldura branca em volta da dock. */
+    border-top: 1px solid rgba(255, 255, 255, 0.22);
+    border-left: 1px solid rgba(255, 255, 255, 0.14);
+    border-right: 1px solid rgba(255, 255, 255, 0.14);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+
+    /* Um pouco mais densa: o vidro escuro precisa se descolar do fundo
+     * sem contar com o rim, que aqui é quase invisível. */
+    box-shadow: 0 10px 32px 0 rgba(0, 0, 0, 0.45);
+}
+
+/* Indicadores de app rodando invertidos: claros sobre o vidro escuro,
+ * com a sombra também invertida (escura, para dar profundidade em vez
+ * de halo). O inline style de "usar cor do tema" continua ganhando dos
+ * dois — é uma escolha explícita do usuário. */
+.arcdock-panel-dark .arcdock-indicator-bar,
+.arcdock-panel-dark .arcdock-running-dot {
+    background-color: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.35);
+}
+
+/* Reservador de espaço do botão Applications: invisível nos dois temas
+ * (alpha 0), mas herdaria o branco da regra acima sem este override. */
+.arcdock-panel-dark .arcdock-menu-dot {
+    background-color: rgba(255, 255, 255, 0);
+    box-shadow: none;
+}
+
+/* Vermelho de atenção é o mesmo nos dois temas — é um alerta, não
+ * decoração. Só o anel branco cede: sobre vidro escuro ele já separa
+ * com bem menos alpha, e no valor do claro pareceria um adesivo. */
+.arcdock-panel-dark .arcdock-attention-dot {
+    border: 1.5px solid rgba(255, 255, 255, 0.75);
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Divisor invertido: sobre o vidro escuro é o BRILHO que separa, com o
+ * mesmo alpha do fio preto do tema claro. */
+.arcdock-panel-dark .arcdock-separator {
+    background-color: rgba(255, 255, 255, 0.20);
+}
+
+/* Tracejado do drop: o mesmo branco rende mais contraste sobre o vidro
+ * escuro, então o alpha desce para não virar uma caixa acesa. */
+.arcdock-panel-dark .arcdock-drop-indicator {
+    background-color: rgba(255, 255, 255, 0.12);
+    border: 2px dashed rgba(255, 255, 255, 0.45);
+}
+
+/* .arcdock-menu-icon / -texture não têm variante escura de propósito:
+ * o branco 0.95 do tema claro (fallback symbolic do Launchpad) é
+ * exatamente a cor certa sobre o vidro escuro. */
+
+/* O tooltip NÃO é descendente do painel (vive no uiGroup), então esta
+ * classe é escolhida na criação do bubble — ver setTooltipTheme(). */
+.arcdock-tooltip-label-dark {
+    background-color: rgba(38, 38, 42, 0.96);
+    color: rgba(255, 255, 255, 0.95);
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.45);
 }

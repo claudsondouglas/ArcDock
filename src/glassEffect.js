@@ -2,9 +2,18 @@ import Shell from "gi://Shell";
 
 const EFFECT_NAME = "liquid-glass";
 
+/* brightness fica EM 1.0 de propósito: o blur é um retângulo e a borda
+ * dele acaba visível quanto mais o brilho se afasta do fundo real — com
+ * o sigma maior daqui, qualquer desvio vira um degrau nítido na margem.
+ * O realce "vidro" vem do gradiente branco do .arcdock-panel, esse sim
+ * recortado pelo border-radius.
+ *
+ * radius 16: o frosted do macOS dissolve o wallpaper em manchas de cor;
+ * com o painel agora bem mais translúcido, um sigma baixo deixava as
+ * janelas atrás legíveis demais através do vidro. */
 const DEFAULTS = Object.freeze({
-  radius: 8,
-  brightness: 1.8,
+  radius: 16,
+  brightness: 1.0,
 });
 
 /* Shell.BlurEffect's intensity property is named `radius` in some GNOME

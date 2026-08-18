@@ -114,14 +114,24 @@ export class AutoHide {
         if (this._state === State.SHOWN || this._state === State.SHOWING)
             return;
         this._cancelHide();
+        // Interromper um hide no meio do caminho não pode teleportar a
+        // dock para baixo antes de subir: ela continua de onde está.
+        const interrupted = this._state === State.HIDING;
         this._state = State.SHOWING;
         this._container.remove_all_transitions();
         this._container.show();
-        this._container.translation_y = this._hideDistance;
+        if (!interrupted)
+            this._container.translation_y = this._hideDistance;
+
         this._container.ease({
             translation_y: 0,
-            duration: ANIM.SHOW_MS,
-            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            duration: this._travelDuration(
+                ANIM.SHOW_MS, this._container.translation_y),
+            // EASE_OUT_EXPO devora quase todo o percurso nos primeiros
+            // frames e termina deslizando — é a resposta "instantânea
+            // mas não seca" que o dock do macOS tem. QUAD, em
+            // comparação, parecia subir pesado.
+            mode: Clutter.AnimationMode.EASE_OUT_EXPO,
             onComplete: () => { this._state = State.SHOWN; },
         });
     }
@@ -134,13 +144,32 @@ export class AutoHide {
         this._container.remove_all_transitions();
         this._container.ease({
             translation_y: this._hideDistance,
-            duration: ANIM.HIDE_MS,
-            mode: Clutter.AnimationMode.EASE_IN_QUAD,
+            duration: this._travelDuration(
+                ANIM.HIDE_MS,
+                this._hideDistance - this._container.translation_y),
+            // Saída acelera para fora (rápido no fim) e é mais curta que
+            // a entrada: sumir não merece a mesma cerimônia de aparecer.
+            mode: Clutter.AnimationMode.EASE_IN_CUBIC,
             onComplete: () => {
                 this._state = State.HIDDEN;
                 this._container.hide();
             },
         });
+    }
+
+    /**
+     * Duração proporcional ao trecho que ainda falta percorrer. Sem isso,
+     * uma animação interrompida perto do fim gastaria a duração cheia
+     * para andar 3px e pareceria travada; o piso TRAVEL_MIN_RATIO evita
+     * o extremo oposto (um percurso curto virar um piscar).
+     */
+    _travelDuration(baseMs, delta) {
+        if (this._hideDistance <= 0)
+            return baseMs;
+        const ratio = Math.min(1, Math.abs(delta) / this._hideDistance);
+        return Math.max(
+            Math.round(baseMs * ANIM.TRAVEL_MIN_RATIO),
+            Math.round(baseMs * ratio));
     }
 
     _scheduleHide() {

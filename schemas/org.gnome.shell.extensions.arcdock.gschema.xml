@@ -12,5 +12,81 @@
       <summary>Use theme color for running dot</summary>
       <description>If true, the running dot uses the system theme foreground color. Otherwise, uses the default dock color.</description>
     </key>
+    <key name="running-indicator-style" type="s">
+      <default>'dot'</default>
+      <choices>
+        <choice value="dot"/>
+        <choice value="dots"/>
+        <choice value="bar"/>
+      </choices>
+      <summary>Running app indicator style</summary>
+      <description>How running applications are marked: "dot" for a single dot, "dots" for one dot per open window (macOS style), "bar" for a horizontal bar.</description>
+    </key>
+    <key name="dock-theme" type="s">
+      <default>'light'</default>
+      <choices>
+        <choice value="light"/>
+        <choice value="dark"/>
+      </choices>
+      <summary>Dock theme</summary>
+      <description>Glass tint of the dock: "light" for translucent white glass, "dark" for translucent dark glass. Running indicators, badges and tooltips follow the chosen theme.</description>
+    </key>
+    <key name="click-to-minimize" type="b">
+      <default>true</default>
+      <summary>Click to minimize</summary>
+      <description>If true, clicking the icon of the focused application minimizes its windows instead of only raising them. With several windows open, the click first cycles through the ones still visible and only minimizes when there is nothing left to raise.</description>
+    </key>
+    <key name="show-apps-button" type="b">
+      <default>true</default>
+      <summary>Show Applications button</summary>
+      <description>If true, the app grid launcher is displayed at the end of the dock. When it is hidden and no other item is present, the dock stays out of the way entirely.</description>
+    </key>
+    <key name="window-animations-enabled" type="b">
+      <default>true</default>
+      <summary>Animate windows from the dock</summary>
+      <description>If true, windows animate open from their dock icon and fly back to it on minimize, like the macOS Dock. If false, windows use the system's default animations.</description>
+    </key>
+    <key name="show-recent-apps" type="b">
+      <default>true</default>
+      <summary>Show recent applications</summary>
+      <description>If true, the last opened applications that are neither pinned nor currently running are shown in their own section, just before the Applications button and separated from the other icons by a thin divider.</description>
+    </key>
+    <key name="magnification-enabled" type="b">
+      <default>false</default>
+      <summary>Magnify icons on hover</summary>
+      <description>If true, dock icons grow as the pointer approaches them and push their neighbours aside, like the macOS Dock.</description>
+    </key>
+    <key name="magnification-scale" type="d">
+      <default>1.5</default>
+      <range min="1.1" max="2.0"/>
+      <summary>Maximum magnification scale</summary>
+      <description>How much bigger the icon directly under the pointer becomes, as a multiplier of its normal size. Only used when magnification is enabled.</description>
+    </key>
+    <key name="magnification-falloff" type="i">
+      <default>150</default>
+      <range min="50" max="400"/>
+      <summary>Magnification falloff distance</summary>
+      <description>Horizontal distance in pixels, measured from the pointer, beyond which icons keep their normal size. Larger values magnify more icons at once, with a gentler slope. Only used when magnification is enabled.</description>
+    </key>
+    <key name="recent-apps" type="as">
+      <default>[]</default>
+      <summary>Recently opened applications</summary>
+      <description>Internal history of recently opened application ids, most recent first. Written by the dock whenever an application starts running; not meant to be edited by hand.</description>
+    </key>
+    <key name="dock-items" type="as">
+      <default>[]</default>
+      <summary>Dock items</summary>
+      <description>Ordered list of typed dock item ids, each formatted as "type:value" (for example "app:firefox.desktop" or "folder:/home/user/Downloads").</description>
+    </key>
+    <key name="dock-groups" type="s">
+      <default>'{}'</default>
+      <summary>Dock app groups</summary>
+      <description>JSON object mapping a group id to its definition, in the form { "groupId": { "name": string, "apps": [string] } }. Stored as JSON because nested dictionaries in GSettings are awkward to manipulate from both the shell and the preferences process.</description>
+    </key>
+    <key name="dock-items-migrated" type="b">
+      <default>false</default>
+      <summary>Legacy pinned apps migrated</summary>
+      <description>Set to true once the legacy pinned-apps.ini file has been imported into dock-items. Never reset it: an empty dock-items list is a valid user choice, not a sign that migration is pending.</description>
+    </key>
   </schema>
 </schemalist>
