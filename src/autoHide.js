@@ -16,6 +16,7 @@ export class AutoHide {
         this._state = State.HIDDEN;
         this._hideDistance = 0;
         this._hideTimeoutId = 0;
+        this._showTimeoutId = 0;
         this._forceHidden = false;
         this._forceShown = false;
         this._timeouts = new TimeoutTracker();
@@ -35,6 +36,7 @@ export class AutoHide {
     }
 
     hideNow() {
+        this._cancelShow();
         this._hide();
     }
 
@@ -51,6 +53,7 @@ export class AutoHide {
         this._forceHidden = forced;
         if (forced) {
             this._cancelHide();
+            this._cancelShow();
             this._container.remove_all_transitions();
             this._state = State.HIDDEN;
             this._container.translation_y = this._hideDistance;
@@ -65,6 +68,7 @@ export class AutoHide {
     destroy() {
         this._timeouts.removeAll();
         this._hideTimeoutId = 0;
+        this._showTimeoutId = 0;
         this._container.remove_all_transitions();
     }
 
@@ -89,11 +93,20 @@ export class AutoHide {
         const inLive = this._isInLiveArea(x, y);
         if (inLive) {
             this._cancelHide();
-            if (this._state === State.HIDDEN || this._state === State.HIDING)
+            // Entrar da borda quente custa a espera do SHOW_DELAY_MS;
+            // interromper um hide, não. No segundo caso a dock ainda está
+            // na tela e o ponteiro voltou atrás de um alvo que ele está
+            // vendo — segurar meio segundo aí seria só teimosia.
+            if (this._state === State.HIDING)
                 this._show();
-        } else if (this._state === State.SHOWN || this._state === State.SHOWING) {
-            if (!this._hideTimeoutId)
-                this._scheduleHide();
+            else if (this._state === State.HIDDEN)
+                this._scheduleShow();
+        } else {
+            this._cancelShow();
+            if (this._state === State.SHOWN || this._state === State.SHOWING) {
+                if (!this._hideTimeoutId)
+                    this._scheduleHide();
+            }
         }
     }
 
@@ -114,6 +127,7 @@ export class AutoHide {
         if (this._state === State.SHOWN || this._state === State.SHOWING)
             return;
         this._cancelHide();
+        this._cancelShow();
         // Interromper um hide no meio do caminho não pode teleportar a
         // dock para baixo antes de subir: ela continua de onde está.
         const interrupted = this._state === State.HIDING;
@@ -127,11 +141,11 @@ export class AutoHide {
             translation_y: 0,
             duration: this._travelDuration(
                 ANIM.SHOW_MS, this._container.translation_y),
-            // EASE_OUT_EXPO devora quase todo o percurso nos primeiros
-            // frames e termina deslizando — é a resposta "instantânea
-            // mas não seca" que o dock do macOS tem. QUAD, em
-            // comparação, parecia subir pesado.
-            mode: Clutter.AnimationMode.EASE_OUT_EXPO,
+            // Espelho do hide (EASE_IN_CUBIC): sobe distribuindo o
+            // percurso e desacelera na chegada. Quem paga o
+            // SHOW_DELAY_MS já esperou pela dock — chegar com o estalo
+            // do EASE_OUT_EXPO depois da espera lia como sobressalto.
+            mode: Clutter.AnimationMode.EASE_OUT_CUBIC,
             onComplete: () => { this._state = State.SHOWN; },
         });
     }
@@ -140,6 +154,7 @@ export class AutoHide {
         if (this._state === State.HIDDEN || this._state === State.HIDING)
             return;
         this._cancelHide();
+        this._cancelShow();
         this._state = State.HIDING;
         this._container.remove_all_transitions();
         this._container.ease({
@@ -179,6 +194,32 @@ export class AutoHide {
             this._hide();
             return GLib.SOURCE_REMOVE;
         });
+    }
+
+    /**
+     * Só agenda: o ponteiro é reconferido na hora em que o timeout
+     * dispara, e não apenas nos ticks. Sem isso uma saída ocorrida nos
+     * últimos milissegundos da espera ainda subiria a dock — o tick que
+     * cancelaria só viria até POINTER_POLL_MS depois — e ela apareceria
+     * já para descer.
+     */
+    _scheduleShow() {
+        if (this._showTimeoutId)
+            return;
+        this._showTimeoutId = this._timeouts.add(TIMING.SHOW_DELAY_MS, () => {
+            this._showTimeoutId = 0;
+            const [x, y] = global.get_pointer();
+            if (this._isInLiveArea(x, y))
+                this._show();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _cancelShow() {
+        if (this._showTimeoutId) {
+            this._timeouts.remove(this._showTimeoutId);
+            this._showTimeoutId = 0;
+        }
     }
 
     _cancelHide() {

@@ -57,6 +57,11 @@
       <summary>Animate windows from the dock</summary>
       <description>If true, windows animate open from their dock icon and fly back to it on minimize, like the macOS Dock. If false, windows use the system's default animations.</description>
     </key>
+    <key name="hide-in-fullscreen" type="b">
+      <default>true</default>
+      <summary>Stay out of the way in fullscreen</summary>
+      <description>If true, the dock — including its hot edge at the bottom of the screen — is fully disabled while a window is fullscreen on the primary monitor: games, video players, browsers in F11. Maximized windows are not affected; only windows that actually asked the compositor for the whole monitor.</description>
+    </key>
     <key name="show-recent-apps" type="b">
       <default>true</default>
       <summary>Show recent applications</summary>

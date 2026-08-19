@@ -247,6 +247,26 @@ export default class ArcDockPreferences extends ExtensionPreferences {
     showAppsRow.add_suffix(showAppsSwitch);
     showAppsRow.activatable_widget = showAppsSwitch;
 
+    const fullscreenRow = new Adw.ActionRow({
+      title: "Stay out of the way in fullscreen",
+      subtitle:
+        "Disable the dock and its bottom hot edge while a window is fullscreen — games, video, F11. Maximized windows are not affected.",
+    });
+    behaviorGroup.add(fullscreenRow);
+
+    const fullscreenSwitch = new Gtk.Switch({
+      active: settings.get_boolean("hide-in-fullscreen"),
+      valign: Gtk.Align.CENTER,
+    });
+    fullscreenSwitch.connect("notify::active", () => {
+      if (
+        settings.get_boolean("hide-in-fullscreen") !== fullscreenSwitch.active
+      )
+        settings.set_boolean("hide-in-fullscreen", fullscreenSwitch.active);
+    });
+    fullscreenRow.add_suffix(fullscreenSwitch);
+    fullscreenRow.activatable_widget = fullscreenSwitch;
+
     const recentAppsRow = new Adw.ActionRow({
       title: "Show recent applications",
       subtitle:

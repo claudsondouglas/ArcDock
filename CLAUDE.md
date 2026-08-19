@@ -26,6 +26,7 @@ src/
 ├── magnification.js      — Magnification (macOS-style hover zoom: host scale + button width).
 ├── autoHide.js           — AutoHide (animates translation_y, pointer polling).
 ├── windowAnimations.js   — WindowAnimations (minimize via Mutter icon geometry, open via custom actor ease).
+├── fullscreenWatcher.js  — FullscreenWatcher (primary monitor in fullscreen → dock force-hidden).
 └── dock.js               — Dock (chrome container + panel + Map<itemId, IconButton>; layout).
 ```
 
@@ -77,6 +78,12 @@ exactly the width used to center the container.
 
 - Styles come from `IndicatorStyle` in `config.js` and MUST stay in sync with the `choices` of the
   `running-indicator-style` gschema key.
+- The light theme paints the dot **white, opaque, with no `box-shadow`**, and one pixel smaller
+  (`INDICATOR.DOT_SIZE_LIGHT`). The size can't come from CSS: the pip's `width`/`height` are set in
+  JS, so `Dock` picks the value from the theme and passes it down as `indicatorDotSize`.
+  The `running-dot-theme-color` key overrides that color inline with the GNOME theme's foreground —
+  in a light GTK theme that is near-black, which is precisely the dot the dock theme is trying not
+  to draw. It stays opt-in and off by default.
 - `_updateRunningIndicator()` rebuilds only when `style:windowCount` changes — `_refresh()` calls
   `setTarget()` on every icon whenever any window changes, and rebuilding actors on each of those
   would be pure churn.
@@ -131,6 +138,26 @@ Enabled by the `click-to-minimize` key. `_windowToActivate()` returns `null` to 
 should minimize"; that only happens when the app is focused and there is no other **non-minimized**
 window to raise. Minimized windows are deliberately not cycle targets when the setting is on —
 otherwise a click would restore them and a multi-window app would never reach the minimize step.
+
+### Fullscreen
+
+Behind `hide-in-fullscreen` (default on). While a window is fullscreen on the primary monitor the
+dock is `setForceHidden(true)`: hidden, hot edge dead, input catcher gone.
+
+- The axis is **fullscreen vs maximized**, never "game vs app". A maximized window is still a
+  decorated window inside the workspace; a fullscreen one asked the compositor for the entire
+  monitor (`_NET_WM_STATE_FULLSCREEN` / xdg-shell `set_fullscreen`), which is the whole "don't
+  interrupt me" intent. Every game in exclusive or borderless fullscreen goes through that path,
+  so no game detection (`Categories=Game`, wm_class lists, idle inhibitors) is needed or wanted —
+  each of those has false positives a fullscreen check doesn't.
+- The state is read from `global.display.get_monitor_in_fullscreen(primaryIndex)`, not from
+  scanning windows: it is the same value `LayoutManager` uses for `trackFullscreen`, already
+  resolved per monitor and already accounting for stacking.
+- `setForceHidden`, not `trackFullscreen: true` on the chrome: the Shell's flag only hides the
+  actor. The hot edge lives in `AutoHide`'s pointer polling and the input catcher is a separate
+  chrome actor — both would stay alive under the game, and the dock popping up on the crosshair
+  is exactly the complaint.
+- The overview case falls out for free: `_updateForceHidden()` already ORs `_overviewShown`.
 
 ### Window animations
 
@@ -214,11 +241,18 @@ network mount freezes the whole session. Use `*_async` with a `Gio.Cancellable`,
 ### Pointer / hover detection
 - `St.Widget` with `track_hover` + `notify::hover` is fragile for small chrome areas (Wayland especially). For auto-hide, **prefer polling via `GLib.timeout_add` + `global.get_pointer()`** with explicit geometric calculation of the area of interest — works on any compositor, in any fullscreen state.
 - 100ms is a reasonable cadence (10Hz) — imperceptible to the user and very low overhead.
+- Showing is **dwell-gated**: the pointer has to stay in the live area for `TIMING.SHOW_DELAY_MS`
+  before the dock rises, and the timeout re-reads `global.get_pointer()` when it fires instead of
+  trusting the tick that scheduled it — a pointer that left in the last few ms would otherwise
+  raise a dock that immediately schedules its own hide. Interrupting a *hide* skips the wait: the
+  dock is still on screen and the user is aiming at something visible.
 
 ### Chrome (`Main.layoutManager.addChrome`)
 - `affectsInputRegion: true` — required to receive events with maximized windows.
 - `affectsStruts: false` — don't reserve workspace area (it's an overlay, not a fixed dock).
-- `trackFullscreen: true` — automatically hidden in fullscreen apps.
+- `trackFullscreen: false` — the Shell would only hide the actor, leaving the hot edge and the
+  input catcher alive under a game. Fullscreen is handled by `FullscreenWatcher` +
+  `setForceHidden()`, which kills the whole interaction (see **Fullscreen**).
 - Always `removeChrome` before `destroy()` on the actor.
 
 ### What **not** to do
@@ -251,16 +285,18 @@ network mount freezes the whole session. Use `*_async` with a `Gio.Cancellable`,
 | Constant | Default | What it does |
 |---|---|---|
 | `SIZE.ICON` | 48 | px of the app icon |
-| `SIZE.BOTTOM_MARGIN` | 12 | gap between dock and bottom edge |
+| `SIZE.BOTTOM_MARGIN` | 2 | gap between the pill and the bottom edge (the pill is anchored to the bottom of the chrome container by `glassHost`’s `y_align: END`; the headroom lives above it) |
 | `SIZE.HOT_EDGE` | 4 | thickness of the strip that triggers show |
 | `SIZE.LIVE_BUFFER` | 8 | px tolerance around the visible dock before starting hide |
 | `ANIM.HOVER_SCALE` | 1 | kept for headroom calculation; no scale on hover |
 | `ANIM.HOVER_LIFT` | 0 | kept for headroom calculation; no lift on hover |
 | `ANIM.HOVER_IN_MS` / `HOVER_OUT_MS` | 140 / 120 | legacy; current hover visual uses tooltip without scale/lift |
-| `ANIM.SHOW_MS` / `HIDE_MS` | 220 | duration of dock animations |
+| `ANIM.SHOW_MS` / `HIDE_MS` | 280 / 200 | duration of dock animations (mirrored cubic: OUT on the way in, IN on the way out) |
 | `TIMING.POINTER_POLL_MS` | 100 | pointer polling frequency |
 | `TIMING.HIDE_DELAY_MS` | 350 | delay before hiding after mouse leaves |
+| `TIMING.SHOW_DELAY_MS` | 250 | dwell time on the hot edge before showing (a pass-by never summons the dock) |
 | `INDICATOR.DOT_SIZE` / `DOT_SPACING` | 5 / 3 | px of each running dot and the gap between dots |
+| `INDICATOR.DOT_SIZE_LIGHT` | 4 | dot size in the light theme, where the dot is flat white with no shadow |
 | `INDICATOR.MAX_DOTS` | 4 | cap on per-window dots (above it nobody counts at a glance) |
 | `INDICATOR.BAR_HEIGHT` / `BAR_WIDTH_RATIO` | 3 / 0.45 | bar style: height in px, width as a fraction of the icon |
 | `INDICATOR.CENTER_Y_OFFSET` | 0.5 | vertical center of the indicator, measured from the icon's bottom edge |

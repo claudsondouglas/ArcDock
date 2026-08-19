@@ -12,6 +12,7 @@ import {
   State,
   BLUR_INSET,
   IndicatorStyle,
+  INDICATOR,
   DockTheme,
   RECENT,
   MAGNIFICATION,
@@ -27,6 +28,7 @@ import { AutoHide } from "./autoHide.js";
 import { Magnification } from "./magnification.js";
 import { InputCatcher } from "./inputCatcher.js";
 import { WindowAnimations } from "./windowAnimations.js";
+import { FullscreenWatcher } from "./fullscreenWatcher.js";
 import { AppsLauncher } from "./appsLauncher/launcher.js";
 import {
   DockItemsStore,
@@ -105,6 +107,10 @@ export class Dock {
     // vazia. Ver _syncContentVisibility().
     this._isEmpty = false;
     this._overviewShown = false;
+    // Janela em tela cheia no monitor primário (jogo, vídeo, F11): a
+    // dock some inteira, borda quente incluída. Ver FullscreenWatcher.
+    this._fullscreenActive = false;
+    this._fullscreenWatcher = null;
     // Grade de apps aberta: muda o visual do painel e tira o input
     // catcher de cena (ver _setLauncherOpen()).
     this._launcherOpen = false;
@@ -188,9 +194,21 @@ export class Dock {
     });
     applyGlass(this._blurBackdrop);
 
+    // O alinhamento vai NO FILHO, não no St.Bin: desde o St-18 (GNOME 49)
+    // StBin não tem mais as properties x-align/y-align, então o
+    // `y_align: END` do container caía no Clutter.Actor do PRÓPRIO Bin —
+    // um chrome de posição fixa, onde não significa nada. O glassHost
+    // ficava sem âncora e o headroom reservado para o tooltip/magnificação
+    // (totalH − altura do painel) sobrava EMBAIXO da pílula, não em cima:
+    // é isso, e não o BOTTOM_MARGIN, que abria a distância até a borda
+    // da tela. Com END o painel encosta no fundo do container, que
+    // _reposition() já coloca a BOTTOM_MARGIN do fim do monitor — a
+    // mesma geometria que _liveRect() e _iconRectForWindow() assumem.
     const glassHost = new St.Widget({
       layout_manager: new Clutter.BinLayout(),
       reactive: false,
+      x_align: Clutter.ActorAlign.CENTER,
+      y_align: Clutter.ActorAlign.END,
     });
     glassHost.add_child(this._blurBackdrop);
     glassHost.add_child(this._panel);
@@ -309,6 +327,20 @@ export class Dock {
         )
       : null;
 
+    // Criado DEPOIS do AutoHide: o estado inicial é aplicado na hora, e
+    // sem settings a dock simplesmente nunca se esconde por fullscreen.
+    if (params.settings) {
+      this._fullscreenWatcher = new FullscreenWatcher(
+        params.settings,
+        (active) => {
+          this._fullscreenActive = active;
+          this._updateForceHidden();
+        },
+      );
+      this._fullscreenActive = this._fullscreenWatcher.active;
+      this._updateForceHidden();
+    }
+
     this._signals.connect(this._container, "notify::visible", () => {
       this._updateInputCatcher(this._hasVisibleWindowOnPrimary());
     });
@@ -380,6 +412,8 @@ export class Dock {
     // enviada às janelas.
     safe(() => this._windowAnimations?.destroy());
     this._windowAnimations = null;
+    safe(() => this._fullscreenWatcher?.destroy());
+    this._fullscreenWatcher = null;
     // Antes dos ícones: o destroy dele desfaz escala e largura em cada um
     // deles, e depois de destruídos não haveria em quem desfazer.
     safe(() => this._magnification?.destroy());
@@ -622,6 +656,10 @@ export class Dock {
       running: entry.running,
       useThemeRunningDotColor: this._useThemeRunningDotColor,
       indicatorStyle: this._indicatorStyle,
+      indicatorDotSize:
+        this._theme === DockTheme.DARK
+          ? INDICATOR.DOT_SIZE
+          : INDICATOR.DOT_SIZE_LIGHT,
       clickToMinimize: this._clickToMinimize,
       onTogglePinned: (source) => this._togglePinned(source.app),
       onMenuStateChanged: (isOpen) => this._onIconMenuStateChanged(isOpen),
@@ -789,7 +827,9 @@ export class Dock {
   }
 
   _updateForceHidden() {
-    this._autoHide?.setForceHidden(this._overviewShown || this._isEmpty);
+    this._autoHide?.setForceHidden(
+      this._overviewShown || this._isEmpty || this._fullscreenActive,
+    );
   }
 
   // _iconOrder cobre TODOS os ícones visíveis, inclusive apps rodando
@@ -1021,9 +1061,16 @@ export class Dock {
 
     this._container.set_size(monitor.width, totalH);
     this._panelSize = { w: naturalW, h };
+    // O recuo vale nos QUATRO lados e sai da altura REAL da pílula
+    // (naturalH), nunca de `h`: `h` carrega o piso ICON+24, bem maior que
+    // o painel, e h - 2*BLUR_INSET dava de volta quase a altura inteira da
+    // pílula — recuo vertical ~zero. Com isso os cantos do retângulo do
+    // blur ficavam FORA do arco de PANEL_RADIUS e apareciam como um
+    // quadrado quase transparente atrás da dock. O recuo r*(1-1/√2) só
+    // inscreve o retângulo no canto redondo se valer nos dois eixos.
     this._blurBackdrop.set_size(
       Math.max(0, naturalW - 2 * BLUR_INSET),
-      Math.max(0, h - 2 * BLUR_INSET),
+      Math.max(0, naturalH - 2 * BLUR_INSET),
     );
     this._container.set_position(
       monitor.x,

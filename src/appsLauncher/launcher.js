@@ -119,6 +119,8 @@ export class AppsLauncher {
         // Clutter.Grab, que nasce e morre a cada abertura, e não num actor
         // ou num objeto de vida longa.
         this._grabRevokedId = 0;
+        // Ver _startRedrawPump(): existe só enquanto o overlay está na tela.
+        this._redrawPump = null;
         this._apps = [];
         this._filtered = [];
         this._pages = [];
@@ -179,6 +181,9 @@ export class AppsLauncher {
         // Visível ANTES do grab: um actor escondido não é alvo válido de
         // grab do seat, e o grab é justamente o que precisa ser validado.
         this._actor.show();
+        // Antes do grab e antes da animação de entrada: a primeira coisa
+        // que o blur pinta já precisa ser um quadro inteiro.
+        this._startRedrawPump();
         // Escudo antes do grab, pelo mesmo motivo de tudo o mais que roda
         // aqui em cima: ele é a metade da modalidade que o Clutter deixou
         // de fazer por nós quando o grab subiu para o uiGroup.
@@ -190,6 +195,7 @@ export class AppsLauncher {
             // junto: sem abrir, ela seria só umas centenas de texturas de
             // ícone paradas na memória.
             this._hideShield();
+            this._stopRedrawPump();
             this._actor.hide();
             this._clearPages();
             return;
@@ -236,6 +242,7 @@ export class AppsLauncher {
             mode: Clutter.AnimationMode.EASE_IN_QUAD,
             onComplete: () => {
                 if (!this._actor) return;
+                this._stopRedrawPump();
                 this._actor.hide();
                 this._actor.set_scale(1, 1);
                 // Só aqui o estado lógico vira HIDDEN — é o instante em que
@@ -252,6 +259,58 @@ export class AppsLauncher {
     toggle() {
         if (this.isOpen) this.close();
         else this.open();
+    }
+
+    // --- Bomba de repintura (artefato do blur de fundo) ---
+
+    /**
+     * Força o overlay inteiro a ser repintado a cada quadro enquanto está
+     * na tela.
+     *
+     * Sem isto o blur deixa RASTROS ESCUROS por onde o ponteiro passou.
+     * O motivo é a combinação de repintura parcial com
+     * `Shell.BlurMode.BACKGROUND`: o efeito copia o retângulo INTEIRO do
+     * actor a partir do framebuffer para usar como fundo, mas o Clutter,
+     * quando só um ícone anima, redesenha apenas o retângulo daquele
+     * ícone. Fora dele o framebuffer ainda contém o quadro ANTERIOR já
+     * composto — isto é, o wallpaper com o borrão e a tinta do launcher
+     * por cima. Esse conteúdo já escurecido é o que o efeito captura,
+     * borra de novo (sigma 48 espalha bem além da região suja) e pinta
+     * dentro da área realmente redesenhada: uma mancha mais escura, com o
+     * formato da caixa de dano, que fica na tela até algo sujar aquele
+     * pedaço outra vez.
+     *
+     * `queue_redraw()` no actor raiz suja o volume de pintura inteiro, o
+     * que faz o wallpaper abaixo ser redesenhado antes da captura — e aí
+     * o que o efeito copia é o fundo de verdade.
+     *
+     * Por quadro e o tempo todo, e não só durante as animações: QUALQUER
+     * dano parcial produz a mancha, inclusive os de um quadro só (o piscar
+     * do cursor da busca, o realce da seleção pelo teclado, a grade
+     * trocando na busca). Um pulso por animação deixaria justamente esses
+     * de fora. O custo fica limitado ao tempo em que a grade está aberta:
+     * é um overlay modal e transitório, e enquanto ele existe não há mais
+     * nada para o compositor desenhar.
+     */
+    _startRedrawPump() {
+        if (!this._actor) return;
+        if (!this._redrawPump) {
+            // Timeline do Clutter, e não um timeout do GLib: presa ao
+            // actor, ela roda no frame clock do monitor — um quadro nosso
+            // para cada quadro pintado, sem sobrar nem faltar.
+            this._redrawPump = new Clutter.Timeline({
+                actor: this._actor,
+                duration: 1000,
+                repeat_count: -1,
+            });
+            this._redrawPump.connect('new-frame', () =>
+                this._actor?.queue_redraw());
+        }
+        if (!this._redrawPump.is_playing()) this._redrawPump.start();
+    }
+
+    _stopRedrawPump() {
+        this._redrawPump?.stop();
     }
 
     destroy() {
@@ -272,6 +331,7 @@ export class AppsLauncher {
         // sem avisar deixaria essa trava de pé sem ninguém para soltá-la.
         if (this.isOpen) safe(() => this._onVisibilityChanged?.(false));
         safe(() => Cursor.setDefault());
+        safe(() => this._stopRedrawPump());
         safe(() => this._clearPages());
         safe(() => this._clearDots());
         safe(() => {
@@ -285,6 +345,9 @@ export class AppsLauncher {
         // invisível por cima da sessão inteira.
         safe(() => this._shield?.destroy());
         this._shield = null;
+        // A timeline segura uma referência ao actor raiz (é dele que sai o
+        // frame clock); parada acima e solta aqui, some junto com ele.
+        this._redrawPump = null;
         // Destruídos junto com o actor raiz (subárvore), aqui só soltamos
         // as referências para que nada volte a tocar em actor morto.
         this._actor = null;

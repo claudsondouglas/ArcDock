@@ -134,6 +134,11 @@ export const LAUNCHER = Object.freeze({
 
 export const INDICATOR = Object.freeze({
   DOT_SIZE: 5,
+  // No tema claro a bolinha é BRANCA OPACA e sem sombra (ver
+  // stylesheet.css): sem o halo escuro que separa o ponto do vidro, um
+  // ponto de 5px vira um borrão claro sobre o painel claro. Um pixel a
+  // menos devolve a leitura de "ponto", não de "mancha".
+  DOT_SIZE_LIGHT: 4,
   DOT_SPACING: 3,
   // Além disso a contagem vira ruído visual: quatro pontos já ocupam
   // metade da largura do ícone e ninguém conta acima disso de relance.
@@ -166,10 +171,13 @@ export const ANIM = Object.freeze({
   HOVER_IN_MS: 140,
   HOVER_OUT_MS: 120,
 
-  // Show/hide do dock. O show é EASE_OUT_EXPO: quase todo o caminho é
-  // percorrido no começo e o fim é um deslize — é o que dá a sensação
-  // de "o dock saltou para a mão" do macOS. O hide é mais curto e
-  // acelera para fora, porque sair de cena não merece a mesma cerimônia.
+  // Show/hide do dock, ambos em CUBIC e espelhados: o show desacelera na
+  // chegada (EASE_OUT_CUBIC), o hide acelera na saída (EASE_IN_CUBIC).
+  // O show já é precedido pelo TIMING.SHOW_DELAY_MS, então a entrada não
+  // precisa provar pressa — o EASE_OUT_EXPO de antes despejava quase todo
+  // o percurso nos primeiros frames e, somado à espera, lia como um
+  // estalo. O hide continua mais curto: sair de cena não merece a mesma
+  // cerimônia de entrar.
   SHOW_MS: 280,
   HIDE_MS: 200,
   // Piso da duração quando a animação é interrompida no meio: sem ele um
@@ -211,6 +219,14 @@ export const ANIM = Object.freeze({
 export const TIMING = Object.freeze({
   POINTER_POLL_MS: 100,
   HIDE_DELAY_MS: 350,
+  // Tempo que o ponteiro precisa PERMANECER na borda de baixo antes de a
+  // dock subir. Sem ele qualquer passagem rápida pelo fundo da tela (ir
+  // até um botão no canto inferior, arremessar o mouse de um lado ao
+  // outro) faz a dock saltar — a intenção de chamá-la é uma parada, não
+  // um roçar. Mais curto que o HIDE_DELAY_MS de propósito: aparecer
+  // devagar demais frustra quem realmente quis a dock, enquanto sumir
+  // rápido demais é que atrapalha quem só desviou o mouse.
+  SHOW_DELAY_MS: 250,
 });
 
 export const State = Object.freeze({

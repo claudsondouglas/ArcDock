@@ -27,6 +27,10 @@ class DockIcon extends IconButton {
         this._running = !!params.running;
         this._useThemeRunningDotColor = !!params.useThemeRunningDotColor;
         this._indicatorStyle = params.indicatorStyle ?? IndicatorStyle.DOT;
+        // O tamanho do ponto vem do Dock porque depende do tema, e o
+        // actor tem width/height explícitos — CSS por tema não alcança
+        // um tamanho fixado em JS.
+        this._dotSize = params.indicatorDotSize ?? INDICATOR.DOT_SIZE;
         this._clickToMinimize = params.clickToMinimize ?? false;
         this._onTogglePinned = params.onTogglePinned ?? null;
         this._attentionTracker = params.attentionTracker ?? null;
@@ -169,16 +173,16 @@ class DockIcon extends IconButton {
             : 1;
         for (let i = 0; i < dots; i++) {
             const pip = this._makePip(
-                'arcdock-running-dot', INDICATOR.DOT_SIZE, INDICATOR.DOT_SIZE);
+                'arcdock-running-dot', this._dotSize, this._dotSize);
             // Posição explícita em vez de um BoxLayout com `spacing`: o
             // espaçamento de BoxLayout vem do tema CSS, e aqui ele
             // precisa casar exatamente com a largura usada para centrar.
-            pip.set_position(i * (INDICATOR.DOT_SIZE + INDICATOR.DOT_SPACING), 0);
+            pip.set_position(i * (this._dotSize + INDICATOR.DOT_SPACING), 0);
             this._indicator.add_child(pip);
         }
         return {
-            width: dots * INDICATOR.DOT_SIZE + (dots - 1) * INDICATOR.DOT_SPACING,
-            height: INDICATOR.DOT_SIZE,
+            width: dots * this._dotSize + (dots - 1) * INDICATOR.DOT_SPACING,
+            height: this._dotSize,
         };
     }
 

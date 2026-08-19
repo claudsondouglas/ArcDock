@@ -118,12 +118,20 @@
     box-shadow: 0 1px 2px 0 rgba(255, 255, 255, 0.25);
 }
 
+/* Branco a 60% e sem sombra: o vidro claro já é translúcido sobre o
+ * wallpaper, então um ponto escuro lia como sujeira e qualquer halo ao
+ * redor lia como segundo ponto desfocado. Opaco, porém, o ponto virava
+ * um furo chapado no vidro — a 60% ele ainda separa do painel mas deixa
+ * o fundo atravessar, que é o indicador discreto do macOS. A
+ * largura/altura aqui só valem para o .arcdock-menu-dot (o placeholder
+ * invisível do botão Applications, que não fixa tamanho em JS): o ponto
+ * real usa INDICATOR.DOT_SIZE_LIGHT, um pixel menor. */
 .arcdock-running-dot {
     width: 5px;
     height: 5px;
     border-radius: 999px;
-    background-color: rgba(25, 25, 25, 0.92);
-    box-shadow: 0 1px 2px 0 rgba(255, 255, 255, 0.25);
+    background-color: rgba(255, 255, 255, 0.60);
+    box-shadow: none;
 }
 
 .arcdock-attention-dot {
@@ -161,16 +169,13 @@
 }
 
 
+/* O stage não pinta NADA: ele existe para pendurar o indicador e as
+ * animações, e o que o usuário vê ali é a textura do ícone sobre o vidro
+ * do painel. Sem fundo próprio em estado nenhum — ver o bloco do hover no
+ * fim do arquivo. */
 .arcdock-icon-stage {
     background-color: transparent;
     box-shadow: none;
-    /* Mesmo raio do estado :hover (ver o realce no fim do arquivo):
-     * o crossfade entre os dois nós não pode "morfar" canto. */
-    border-radius: 14px;
-    /* 120ms e não 0: é o fade do realce de hover, nas DUAS direções —
-     * o St lê transition-duration do nó NOVO, então este valor rege a
-     * saída do hover e o do seletor :hover rege a entrada. */
-    transition-duration: 120ms;
 }
 
 /* Divisor entre a seção principal e os "abertos recentemente". Preto
@@ -461,33 +466,18 @@
 }
 
 /* ------------------------------------------------------------------
- * Realce de hover do ícone (macOS/Windows 11: fundo arredondado que
- * clareia atrás do item sob o cursor)
+ * Hover do ícone: NENHUM fundo.
  *
- * O fundo vai no STAGE, nunca no botão: o stage é filho do host, então
- * o realce acompanha de graça a escala da magnificação (que vive no
- * host) e o press/quique (que vivem no próprio stage) — e um background
- * não mexe em geometria nenhuma, logo a altura preferida do painel fica
- * intocada. A pseudo-classe :hover pertence ao BOTÃO (é ele que tem
- * track_hover), daí o seletor descendente; o St repropaga o
- * style-changed aos filhos quando a pseudo-classe do pai muda — mesmo
- * padrão de `.check-box:focus .check-box-box` do tema do Shell. Vale
- * para apps, pastas, recentes e o botão Applications: todos têm
- * .arcdock-icon no botão e .arcdock-icon-stage no stage.
+ * O realce quadrado atrás do ícone (padrão do Windows 11, e o que estas
+ * regras pintavam) não existe no Dock do macOS e brigava com o vidro:
+ * sobre o painel claro, um branco translúcido forte o bastante para ler
+ * como "mais claro" já virava um quadrado aceso em volta de um ícone que
+ * é ele mesmo colorido. O feedback de hover aqui é o tooltip acima do
+ * ícone e, quando ligada, a magnificação — nada atrás dele.
+ *
+ * O stage fica sem fundo em TODOS os estados (ver .arcdock-icon-stage lá
+ * em cima); o botão já zera o dele no bloco de reset do topo do arquivo.
  * ------------------------------------------------------------------ */
-.arcdock-icon:hover .arcdock-icon-stage {
-    /* Sobre o vidro claro (já bem branco por dentro) os ~15% clássicos
-     * desapareceriam — precisa de mais alpha pra ler como "mais claro". */
-    background-color: rgba(255, 255, 255, 0.32);
-    border-radius: 14px;
-    transition-duration: 120ms;
-}
-
-/* Vidro escuro: branco a ~15% é exatamente o realce do macOS/Win11 —
- * o alpha do tema claro aqui viraria um quadrado aceso. */
-.arcdock-panel-dark .arcdock-icon:hover .arcdock-icon-stage {
-    background-color: rgba(255, 255, 255, 0.15);
-}
 
 /* Dock com a grade de apps aberta: só os ícones flutuando, como o Dock do
  * macOS sobre o Launchpad. A classe é posta e tirada em src/dock.js
