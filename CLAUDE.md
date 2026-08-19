@@ -32,6 +32,29 @@ src/
 
 One class = one file = one responsibility. **Anything that needs cleanup never lives loose outside a tracker.**
 
+### Panel sections
+
+The panel is three boxes with a divider between them, and the Applications button glued to the
+end of the last one:
+
+```
+apps (pinned or running) | recently opened | folders + Applications
+```
+
+- The button is the end of the dock, not a section: it never gets a divider of its own.
+- A divider is only drawn between two sections that **both** have content, so with no recents the
+  row reads `apps | folders + button` and with no folders `apps + button`.
+- Apps and folders are separate boxes (`_appsBox`/`_foldersBox`) rather than one ordered by
+  `_iconOrder`, because recents sit *between* them and a single `St.BoxLayout` can't open a gap
+  in its middle. `_iconOrder` stays a single list — it is the order the store persists — and each
+  box consumes only the ids of its own type (`_boxForId`), so what the list dictates is the
+  relative order *inside* each section.
+- Each box is its own drop target (`_dropDelegate(box)`), and a section only accepts its own type:
+  the DND handler receives coordinates already converted to the target's space but not the target
+  itself, so one shared delegate would leave `x` ambiguous between the two boxes. `_reorder()`
+  converts the section-local drop index back to a global `_iconOrder` position via the neighbour
+  that occupies the slot — an item never crosses the boundary between sections by dragging.
+
 ### Dock items
 
 An item is a typed id string, `type:value` — `app:firefox.desktop`, `folder:/home/u/Downloads`,
@@ -53,7 +76,7 @@ value is a path and may contain more.
 ### Recently opened
 
 Mirrors macOS's "Show recent applications in Dock": up to `RECENT.VISIBLE` apps in their own box,
-before the Applications button, behind the `show-recent-apps` key.
+between the apps and the folders (see **Panel sections**), behind the `show-recent-apps` key.
 
 - History lives in `recent-apps` (`as`, most recent first) and is written **always**, even with the
   section switched off — turning it back on must find a populated queue. **Nothing listens to
@@ -304,5 +327,5 @@ network mount freezes the whole session. Use `*_async` with a `Gio.Cancellable`,
 | `MAGNIFICATION.MIN_SCALE` / `MAX_SCALE` / `DEFAULT_SCALE` | 1.1 / 2.0 / 1.5 | hover zoom limits; must match the `<range>` of `magnification-scale` |
 | `MAGNIFICATION.MIN_FALLOFF` / `MAX_FALLOFF` / `DEFAULT_FALLOFF` | 50 / 400 / 150 | px from the pointer where the zoom dies out; must match `magnification-falloff` |
 | `MAGNIFICATION.RELAX_MS` | 150 | the only eased part of the zoom: the way back when the pointer leaves |
-| `RECENT.SEPARATOR_*` | 1 / 0.6 / -4 | divider before the recents section: width in px, height as a fraction of the icon, and the lift that aligns it with the icons instead of the row box |
+| `RECENT.SEPARATOR_*` | 1 / 0.6 / -4 | the section dividers: width in px, height as a fraction of the icon, and the lift that aligns them with the icons instead of the row box |
 | `ANIM.WINDOW_OPEN_MS` | 250 | duration of the custom open-from-icon animation (`window-animations-enabled`) |

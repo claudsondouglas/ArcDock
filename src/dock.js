@@ -214,32 +214,40 @@ export class Dock {
     glassHost.add_child(this._panel);
     this._container.set_child(glassHost);
 
-    // Container exclusivo para ícones de janela — o DnD opera só aqui.
+    // Três seções, na ordem do macOS:
+    //
+    //   apps (fixados ou rodando) | recentes | pastas + botão Applications
+    //
+    // O botão é o FIM da dock, não uma seção própria: fica colado nas
+    // pastas e nunca ganha divisor. Cada divisor só aparece quando há
+    // conteúdo dos dois lados (ver _syncContentVisibility), então sem
+    // recentes a fila vira "apps | pastas + botão" e sem pastas
+    // "apps + botão".
+    //
+    // Apps e pastas são caixas SEPARADAS, e não uma só ordenada por
+    // _iconOrder, porque a seção de recentes entra no meio delas — um
+    // único BoxLayout não tem como abrir espaço aí. _iconOrder continua
+    // sendo uma lista só (é a ordem persistida no store) e cada caixa
+    // consome dela apenas os ids do seu tipo.
     this._appsBox = new St.BoxLayout({ vertical: false });
-    this._appsBox._delegate = this;
+    this._appsBox._delegate = this._dropDelegate(this._appsBox);
     this._panel.add_child(this._appsBox);
 
-    // Divisor + seção de recentes ficam ENTRE a caixa de apps e o botão
-    // Applications, como no macOS. Nenhum dos dois recebe `_delegate`: só
-    // a caixa principal é alvo de drop, então nada pode ser solto aqui.
-    this._separator = new St.Widget({
-      style_class: "arcdock-separator",
-      reactive: false,
-      width: RECENT.SEPARATOR_WIDTH,
-      height: Math.round(this._size.ICON * RECENT.SEPARATOR_HEIGHT_RATIO),
-      // Sem isto o BoxLayout estica o fio até a altura total da linha,
-      // que inclui o espaço do indicador de app rodando.
-      y_expand: false,
-      y_align: Clutter.ActorAlign.CENTER,
-      visible: false,
-    });
-    // translation_y e não margem: é um deslocamento de pintura, não muda
-    // a alocação nem a altura pedida pelo painel.
-    this._separator.translation_y = RECENT.SEPARATOR_Y_OFFSET;
-    this._panel.add_child(this._separator);
+    this._recentsSeparator = this._createSeparator();
+    this._panel.add_child(this._recentsSeparator);
 
+    // Os recentes não recebem `_delegate`: são voláteis, não estão em
+    // _iconOrder e não têm posição para guardar, então nada pode ser
+    // solto aqui.
     this._recentsBox = new St.BoxLayout({ vertical: false, visible: false });
     this._panel.add_child(this._recentsBox);
+
+    this._foldersSeparator = this._createSeparator();
+    this._panel.add_child(this._foldersSeparator);
+
+    this._foldersBox = new St.BoxLayout({ vertical: false, visible: false });
+    this._foldersBox._delegate = this._dropDelegate(this._foldersBox);
+    this._panel.add_child(this._foldersBox);
 
     // Criado ANTES do ShowAppsIcon porque é o botão quem recebe a ação:
     // sem o launcher em mãos não dá para decidir se o clique abre a
@@ -448,7 +456,9 @@ export class Dock {
     // Destruídos junto com o container (subtree), só soltamos a referência.
     this._blurBackdrop = null;
     this._recentsBox = null;
-    this._separator = null;
+    this._foldersBox = null;
+    this._recentsSeparator = null;
+    this._foldersSeparator = null;
   }
 
   _refresh() {
@@ -547,7 +557,9 @@ export class Dock {
           : this._createAppIcon(entry);
       this._connectIcon(icon);
       this._icons.set(id, icon);
-      this._appsBox.add_child(icon);
+      // Nasce já na caixa da sua seção; _applyOrder() logo abaixo só
+      // acerta a posição dentro dela.
+      this._boxForId(id).add_child(icon);
     }
     for (const [id, icon] of this._icons) {
       if (!seen.has(id)) {
@@ -667,6 +679,29 @@ export class Dock {
     });
   }
 
+  /**
+   * O fio vertical que separa duas seções do painel. Nasce invisível:
+   * quem decide é _syncContentVisibility(), e só há o que separar quando
+   * as duas seções vizinhas têm conteúdo.
+   */
+  _createSeparator() {
+    const separator = new St.Widget({
+      style_class: "arcdock-separator",
+      reactive: false,
+      width: RECENT.SEPARATOR_WIDTH,
+      height: Math.round(this._size.ICON * RECENT.SEPARATOR_HEIGHT_RATIO),
+      // Sem isto o BoxLayout estica o fio até a altura total da linha,
+      // que inclui o espaço do indicador de app rodando.
+      y_expand: false,
+      y_align: Clutter.ActorAlign.CENTER,
+      visible: false,
+    });
+    // translation_y e não margem: é um deslocamento de pintura, não muda
+    // a alocação nem a altura pedida pelo painel.
+    separator.translation_y = RECENT.SEPARATOR_Y_OFFSET;
+    return separator;
+  }
+
   _createFolderIcon(entry) {
     return new FolderIcon(entry.path, {
       id: entry.id,
@@ -771,7 +806,7 @@ export class Dock {
    */
   _magnifiableIcons() {
     const icons = [];
-    for (const box of [this._appsBox, this._recentsBox]) {
+    for (const box of [this._appsBox, this._recentsBox, this._foldersBox]) {
       for (const child of box?.get_children() ?? [])
         if (child instanceof IconButton) icons.push(child);
     }
@@ -798,10 +833,10 @@ export class Dock {
     return window.get_stable_sequence();
   }
 
-  // Duas camadas de "vazio": sem ícones o _appsBox some (senão o painel
-  // ficaria com o padding dele); sem ícones E sem o botão Applications o
-  // painel inteiro não teria nada dentro, e uma pílula de vidro vazia
-  // subindo na borda da tela é pior do que dock nenhuma.
+  // Duas camadas de "vazio": uma caixa sem ícones some (senão o painel
+  // ficaria com o padding dela); sem ícone NENHUM e sem o botão
+  // Applications o painel inteiro não teria nada dentro, e uma pílula de
+  // vidro vazia subindo na borda da tela é pior do que dock nenhuma.
   //
   // Esconder o _container à mão brigaria com o AutoHide, que faz
   // show()/hide() nele a cada tick; o mecanismo próprio dele para "não
@@ -809,15 +844,26 @@ export class Dock {
   // os dois motivos passam por _updateForceHidden() e nenhum desliga o
   // outro ao sair.
   _syncContentVisibility() {
-    this._appsBox.visible = this._icons.size > 0;
+    let folders = 0;
+    // Pelo id, a mesma fonte que _boxForId usa para decidir a caixa —
+    // contar por classe de ícone poderia divergir dela.
+    for (const id of this._icons.keys())
+      if (this._boxForId(id) === this._foldersBox) folders++;
+    const hasApps = this._icons.size - folders > 0;
+    const hasFolders = folders > 0;
     const hasRecents = this._recentIcons.size > 0;
+
+    this._appsBox.visible = hasApps;
     this._recentsBox.visible = hasRecents;
-    // O divisor só existe para separar duas coisas: sem recentes não há o
-    // que separar, e sem a caixa principal ele viraria um fio solto na
-    // borda esquerda do painel.
-    this._separator.visible = hasRecents && this._icons.size > 0;
+    this._foldersBox.visible = hasFolders;
+    // Um divisor só existe entre duas seções COM conteúdo: sem nada à
+    // esquerda ele vira um fio solto na borda do painel, e sem nada à
+    // direita ele fica encostado no botão Applications separando o botão
+    // do nada.
+    this._recentsSeparator.visible = hasApps && hasRecents;
+    this._foldersSeparator.visible = hasFolders && (hasApps || hasRecents);
     this._isEmpty =
-      this._icons.size === 0 && !hasRecents && !this._showAppsButton;
+      !hasApps && !hasRecents && !hasFolders && !this._showAppsButton;
     this._updateForceHidden();
   }
 
@@ -868,36 +914,77 @@ export class Dock {
     this._iconOrder.push(...volatileIds);
   }
 
+  // Uma lista de ordem, duas caixas: _iconOrder mistura apps e pastas
+  // (é a ordem que o store persiste), mas cada tipo mora na sua seção.
+  // Cada caixa tem o seu próprio contador, então o que _iconOrder dita
+  // aqui é a ordem RELATIVA dentro de cada seção.
   _applyOrder() {
-    this._iconOrder.forEach((id, idx) => {
+    const nextIndex = new Map();
+    for (const id of this._iconOrder) {
       const icon = this._icons.get(id);
-      if (!icon) return;
+      if (!icon) continue;
+      const box = this._boxForId(id);
+      const idx = nextIndex.get(box) ?? 0;
+      nextIndex.set(box, idx + 1);
       const parent = icon.get_parent();
-      if (parent !== this._appsBox) {
+      if (parent !== box) {
         parent?.remove_child(icon);
-        this._appsBox.insert_child_at_index(icon, idx);
+        box.insert_child_at_index(icon, idx);
       } else {
-        this._appsBox.set_child_at_index(icon, idx);
+        box.set_child_at_index(icon, idx);
       }
       icon.show();
       icon.opacity = 255;
-    });
+    }
   }
 
-  // DND drop target — chamados no _delegate do panel.
-  handleDragOver(source, _actor, x) {
-    if (!this._isReorderable(source)) return DND.DragMotionResult.NO_DROP;
-    this._showDropIndicator();
-    this._moveDropIndicator(this._dropIndexAt(x));
+  // A seção onde um id mora, decidida pelo TIPO do id e não pela classe
+  // do ícone: isso vale antes de o ícone existir (_refresh) e depois de
+  // ele morrer (_reorder mexe em ids).
+  _boxForId(id) {
+    return parseId(id)?.type === ItemType.FOLDER
+      ? this._foldersBox
+      : this._appsBox;
+  }
+
+  /**
+   * Alvo de drop de UMA caixa.
+   *
+   * Cada caixa precisa do seu porque o DND entrega ao handleDragOver as
+   * coordenadas já convertidas para o espaço do alvo mas não entrega o
+   * alvo: com o mesmo `this` nas duas caixas, `x` seria ambíguo — os
+   * mesmos 40px podem cair sobre o segundo app ou sobre a primeira pasta.
+   */
+  _dropDelegate(box) {
+    return {
+      handleDragOver: (source, _actor, x) =>
+        this._handleDragOver(box, source, x),
+      acceptDrop: (source, _actor, x) => this._acceptDrop(box, source, x),
+    };
+  }
+
+  _handleDragOver(box, source, x) {
+    if (!this._acceptsDrop(box, source)) return DND.DragMotionResult.NO_DROP;
+    this._showDropIndicator(box);
+    this._moveDropIndicator(this._dropIndexAt(box, x));
     return DND.DragMotionResult.MOVE_DROP;
   }
 
-  acceptDrop(source, _actor, x) {
-    if (!this._isReorderable(source)) return false;
-    const targetIndex = this._dropIndexAt(x);
+  _acceptDrop(box, source, x) {
+    if (!this._acceptsDrop(box, source)) return false;
+    const targetIndex = this._dropIndexAt(box, x);
     this._hideDropIndicator();
-    this._reorder(source.id, targetIndex);
+    this._reorder(source.id, targetIndex, box);
     return true;
+  }
+
+  /**
+   * Uma seção só aceita o que é dela: arrastar um app sobre a caixa de
+   * pastas (ou o contrário) recusa o drop, porque a seção é dada pelo
+   * tipo do item e mudá-la por arrasto não significa nada.
+   */
+  _acceptsDrop(box, source) {
+    return this._isReorderable(source) && this._boxForId(source.id) === box;
   }
 
   /**
@@ -940,8 +1027,11 @@ export class Dock {
     return targets;
   }
 
-  _showDropIndicator() {
-    if (this._dropIndicator) return;
+  _showDropIndicator(box) {
+    if (this._dropIndicator?.get_parent() === box) return;
+    // Trocou de caixa no meio do arrasto: o indicador é recriado no lugar
+    // certo em vez de reparentado, para não deixar rastro na caixa antiga.
+    this._hideDropIndicator();
     // y_expand:false + y_align:CENTER impede que o BoxLayout estique o
     // indicador para a altura total do ícone (que inclui o espaço do
     // running dot abaixo), mantendo-o como um quadrado perfeito.
@@ -952,7 +1042,7 @@ export class Dock {
       y_expand: false,
       y_align: Clutter.ActorAlign.START,
     });
-    this._appsBox.add_child(this._dropIndicator);
+    box.add_child(this._dropIndicator);
   }
 
   _hideDropIndicator() {
@@ -961,25 +1051,27 @@ export class Dock {
   }
 
   _moveDropIndicator(visualIndex) {
-    if (!this._dropIndicator) return;
+    const box = this._dropIndicator?.get_parent();
+    if (!box) return;
     // Converte índice visual (só ícones visíveis) em índice absoluto de children.
-    const children = this._appsBox.get_children()
+    const children = box.get_children()
       .filter(c => c !== this._dropIndicator);
     let visCount = 0;
     for (let i = 0; i < children.length; i++) {
       if (!children[i].visible) continue;
       if (visCount === visualIndex) {
-        this._appsBox.set_child_at_index(this._dropIndicator, i);
+        box.set_child_at_index(this._dropIndicator, i);
         return;
       }
       visCount++;
     }
-    this._appsBox.set_child_at_index(this._dropIndicator, children.length);
+    box.set_child_at_index(this._dropIndicator, children.length);
   }
 
-  _dropIndexAt(x) {
+  // Índice DENTRO da seção `box` — não é índice de _iconOrder.
+  _dropIndexAt(box, x) {
     let idx = 0;
-    for (const child of this._appsBox.get_children()) {
+    for (const child of box.get_children()) {
       if (child === this._dropIndicator) continue;
       if (!child.visible) continue; // ignora source (hidden durante drag)
       const center = child.x + child.width / 2;
@@ -989,11 +1081,28 @@ export class Dock {
     return idx;
   }
 
-  _reorder(sourceId, targetIndex) {
+  /**
+   * `targetIndex` é a posição dentro da SEÇÃO que recebeu o drop;
+   * _iconOrder é global e mistura as duas. A conversão é feita pelo
+   * vizinho: o id que ocupa esse slot na seção marca o ponto de inserção
+   * global, e um destino além do último slot vai logo depois do último id
+   * da seção — assim o item nunca atravessa a fronteira entre seções.
+   */
+  _reorder(sourceId, targetIndex, box) {
     const fromIndex = this._iconOrder.indexOf(sourceId);
     if (fromIndex === -1) return;
     this._iconOrder.splice(fromIndex, 1);
-    this._iconOrder.splice(targetIndex, 0, sourceId);
+    // Depois do splice, como o próprio targetIndex: o ícone arrastado
+    // está escondido e _dropIndexAt() não o conta.
+    const sectionIds = this._iconOrder.filter(
+      (id) => this._boxForId(id) === box,
+    );
+    let at;
+    if (!sectionIds.length) at = fromIndex; // era o único da seção
+    else if (targetIndex >= sectionIds.length)
+      at = this._iconOrder.indexOf(sectionIds[sectionIds.length - 1]) + 1;
+    else at = this._iconOrder.indexOf(sectionIds[targetIndex]);
+    this._iconOrder.splice(at, 0, sourceId);
     this._applyOrder();
     this._persistOrder();
   }
