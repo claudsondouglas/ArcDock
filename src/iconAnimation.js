@@ -1,10 +1,12 @@
 import Clutter from "gi://Clutter";
+import GLib from "gi://GLib";
 import St from "gi://St";
 
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 
-import { ANIM, DockTheme } from "./config.js";
+import { ANIM, DockTheme, TIMING } from "./config.js";
 import * as Cursor from "./cursor.js";
+import { TimeoutTracker } from "./trackers.js";
 
 // Tema atual do tooltip. Ele vive no uiGroup, fora da árvore do painel,
 // então nenhum seletor descendente de .arcdock-panel-dark o alcança: a
@@ -114,12 +116,48 @@ export function triggerLaunchBounce(button) {
 export function attachHoverPress(button) {
   const target = animationTarget(button);
   target.set_pivot_point(0.5, 1.0);
+  // Tracker do watchdog de hover (abaixo). Vive no botão e é esvaziado
+  // no destroy — nada de timeout solto fora de tracker.
+  button._hoverTimeouts = new TimeoutTracker();
 
   button.connect("notify::hover", () => {
     if (button.hover) {
+      // O St do GNOME 49/50 trocou a implementação de sync_hover(): em
+      // vez de perguntar ao stage sobre qual actor o ponteiro está, ele
+      // confia num contador interno de enter/leave (enter_count). Esse
+      // contador VAZA sempre que o botão sai de cena com o ponteiro em
+      // cima — o drag-begin faz hide() no próprio botão, o auto-hide
+      // esconde o container — porque actor fora de cena nunca recebe o
+      // leave (st_widget_unmap zera o hover, mas NÃO o contador). Na
+      // sequência, qualquer sync_hover — como o track_hover=true de
+      // Dock._resumeHover() no fim de um drag — faz set_hover(TRUE) com
+      // o ponteiro em QUALQUER lugar da tela, e como ele não está aqui
+      // dentro, nenhum leave jamais desfaz: cursor de mãozinha, tooltip
+      // e realce grudados. Validar contra a geometria real mata a
+      // ressurreição na origem: hover=true com o ponteiro fora do botão
+      // é sempre estado podre, nunca um hover de verdade.
+      if (!_pointerInsideButton(button)) {
+        // Flag pro ramo de saída logo abaixo (o set_hover dispara o
+        // notify sincronamente): este hover nunca "entrou", então não
+        // há cursor/tooltip/press a desfazer — e o Cursor.setDefault()
+        // de lá atropelaria o cursor de um ícone realmente em hover.
+        button._hoverGhost = true;
+        button.set_hover(false);
+        button._hoverGhost = false;
+        return;
+      }
       Cursor.setPointer();
       _showTooltip(button);
+      // Rede pra TODA saída sem crossing event — grab modal engolindo o
+      // leave (a doc do St avisa que hover não é rastreável durante um
+      // pointer grab), actor transladado/escondido sob o ponteiro
+      // parado, ícone recriado pelo _refresh(). Enquanto o botão se
+      // achar em hover, confere a 10Hz se o ponteiro segue nele; é o
+      // mesmo padrão de polling do auto-hide.
+      _startHoverWatchdog(button);
     } else {
+      _stopHoverWatchdog(button);
+      if (button._hoverGhost) return;
       // Sair do ícone rearma o tooltip pro próximo hover.
       button._tooltipSuppressed = false;
       Cursor.setDefault();
@@ -162,6 +200,10 @@ export function attachHoverPress(button) {
   // visual volta de uma vez, sem ease.
   button.connect("notify::mapped", () => {
     if (!button.mapped) {
+      // O st_widget_unmap já zera o hover (e o ramo de saída acima para
+      // o watchdog), mas só quando track_hover está ligado — durante um
+      // drag ele está desligado, então o stop aqui é a garantia.
+      _stopHoverWatchdog(button);
       _cancelIconAnimations(button);
       _hideTooltip(button, true);
     }
@@ -172,11 +214,67 @@ export function attachHoverPress(button) {
     // destruição), então dá para parar as transições em vez de deixá-las
     // morrer junto com ele e disparar onComplete sobre actor finalizado.
     button._animDestroyed = true;
+    button._hoverTimeouts?.removeAll();
+    button._hoverWatchdogId = 0;
     try {
       animationTarget(button).remove_all_transitions();
     } catch (_) {}
     _hideTooltip(button, true);
   });
+}
+
+/**
+ * O ponteiro está mesmo sobre o botão? Conta feita em geometria
+ * transformada, então acompanha a translação do auto-hide e a largura
+ * extra da magnificação; botão fora de cena conta como "fora" — actor
+ * desmapeado não recebe crossing events, logo hover nele é sempre resto
+ * de estado, nunca um hover real.
+ */
+function _pointerInsideButton(button) {
+  if (!button.mapped || !button.visible) return false;
+  const [x, y] = global.get_pointer();
+  const rect = button.get_transformed_extents();
+  return (
+    x >= rect.get_x() &&
+    x < rect.get_x() + rect.get_width() &&
+    y >= rect.get_y() &&
+    y < rect.get_y() + rect.get_height()
+  );
+}
+
+// --- Watchdog de hover ---
+//
+// Só roda ENQUANTO um botão está em hover (na prática, um por vez), e
+// morre sozinho no primeiro tick em que o hover cai — custo desprezível.
+// É a rede para os jeitos de o ponteiro "sair" sem crossing event que
+// nenhum handler cobre por construção: grab modal (menu de contexto,
+// launcher, overview), dock escondida sob o ponteiro parado, ícone
+// recriado pelo _refresh() por baixo do cursor.
+
+function _startHoverWatchdog(button) {
+  if (button._hoverWatchdogId) return;
+  button._hoverWatchdogId =
+    button._hoverTimeouts?.add(TIMING.POINTER_POLL_MS, () => {
+      if (button._animDestroyed || !button.hover) {
+        button._hoverWatchdogId = 0;
+        return GLib.SOURCE_REMOVE;
+      }
+      if (!_pointerInsideButton(button)) {
+        button._hoverWatchdogId = 0;
+        // set_hover(false) percorre o caminho NORMAL de saída (o
+        // notify::hover acima): devolve o cursor, fecha o tooltip com
+        // fade e solta o press — nada de desfazer na mão aqui.
+        button.set_hover(false);
+        return GLib.SOURCE_REMOVE;
+      }
+      return GLib.SOURCE_CONTINUE;
+    }) ?? 0;
+}
+
+function _stopHoverWatchdog(button) {
+  if (!button._hoverWatchdogId) return;
+  button._hoverTimeouts?.remove(button._hoverWatchdogId);
+  button._hoverWatchdogId = 0;
 }
 
 /** Fecha o tooltip agora e impede que ele volte até o próximo hover. */
@@ -186,6 +284,14 @@ export function dismissTooltip(button) {
 }
 
 export function resetHoverPress(button) {
+  _stopHoverWatchdog(button);
+  // O hover não pode sobreviver a um reset: quem chama (drag-begin) já
+  // sabe que o caminho normal de saída não vai rodar — o drag rouba o
+  // ponteiro e o track_hover é desligado logo em seguida. set_hover(false)
+  // derruba a pseudo-classe :hover (o realce de fundo some junto) e
+  // dispara o notify que devolve o cursor; o reset duro abaixo cobre o
+  // que a saída animada deixaria pela metade.
+  if (button.hover) button.set_hover(false);
   button._tooltipSuppressed = false;
   // O drag rouba o ponteiro: o release nunca chega ao botão, então o
   // flag de press precisa ser zerado à mão ou o próximo hover-out

@@ -15,6 +15,7 @@ import {
   DockTheme,
   RECENT,
   MAGNIFICATION,
+  LAUNCHER,
 } from "./config.js";
 import { SignalTracker } from "./trackers.js";
 import { DockIcon } from "./dockIcon.js";
@@ -26,6 +27,7 @@ import { AutoHide } from "./autoHide.js";
 import { Magnification } from "./magnification.js";
 import { InputCatcher } from "./inputCatcher.js";
 import { WindowAnimations } from "./windowAnimations.js";
+import { AppsLauncher } from "./appsLauncher/launcher.js";
 import {
   DockItemsStore,
   ItemType,
@@ -60,6 +62,22 @@ export class Dock {
     this._showRecentApps = params.showRecentApps ?? true;
     this._magnificationParams = params.magnification ?? null;
     this._magnification = null;
+    // Bloco ausente (dock construída sem ele) conta como desligado: o
+    // botão Applications volta ao overview sozinho, que é o fallback do
+    // ShowAppsIcon.
+    this._appsLauncherParams = params.appsLauncher ?? null;
+    this._appsLauncher = null;
+    // Reclampeado aqui pelo mesmo motivo documentado em config.js para
+    // magnification-scale: o valor vem de uma key do gschema e uma key
+    // adulterada (dconf na mão, backup de outra versão) não pode pedir
+    // uma grade de 400 colunas nem de uma só.
+    this._appsLauncherColumns = Math.min(
+      LAUNCHER.MAX_COLUMNS,
+      Math.max(
+        LAUNCHER.MIN_COLUMNS,
+        this._appsLauncherParams?.columns ?? LAUNCHER.DEFAULT_COLUMNS,
+      ),
+    );
     // Guardado à parte do módulo porque _reposition() precisa dele para
     // reservar headroom ANTES (e depois) de o efeito existir; 1 significa
     // "sem magnificação" e some do cálculo.
@@ -87,6 +105,9 @@ export class Dock {
     // vazia. Ver _syncContentVisibility().
     this._isEmpty = false;
     this._overviewShown = false;
+    // Grade de apps aberta: muda o visual do painel e tira o input
+    // catcher de cena (ver _setLauncherOpen()).
+    this._launcherOpen = false;
     this._icons = new Map();
     // Map SEPARADO do _icons: os recentes não entram em _iconOrder, nem
     // no DnD, nem na ordem persistida — são uma vitrine derivada do
@@ -123,7 +144,19 @@ export class Dock {
       return onSelf ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
     };
     this._container.connect("button-press-event", stopIfOwnPixel);
-    this._container.connect("button-release-event", stopIfOwnPixel);
+    // No release, esse mesmo pixel vazio também FECHA a grade de apps
+    // quando ela está aberta: o container tem a largura inteira do
+    // monitor, então a faixa ao lado da pílula é "fora da dock" para
+    // qualquer efeito — e o gesto de fechar clicando fora não pode morrer
+    // só porque o clique caiu nessa faixa em vez de no overlay. O
+    // EVENT_STOP continua valendo: o clique não pode vazar para a janela
+    // atrás.
+    this._container.connect("button-release-event", (actor, event) => {
+      if (stopIfOwnPixel(actor, event) === Clutter.EVENT_PROPAGATE)
+        return Clutter.EVENT_PROPAGATE;
+      this._appsLauncher?.close();
+      return Clutter.EVENT_STOP;
+    });
 
     this._panel = new St.BoxLayout({
       style_class: "arcdock-panel",
@@ -190,7 +223,45 @@ export class Dock {
     this._recentsBox = new St.BoxLayout({ vertical: false, visible: false });
     this._panel.add_child(this._recentsBox);
 
-    this._showAppsIcon = new ShowAppsIcon({ iconSize: this._size.ICON });
+    // Criado ANTES do ShowAppsIcon porque é o botão quem recebe a ação:
+    // sem o launcher em mãos não dá para decidir se o clique abre a
+    // grade ou cai no overview. Isso o coloca antes de this._autoHide,
+    // que só nasce mais adiante no construtor — daí o `?.` no
+    // onVisibilityChanged. Na prática o callback só dispara em clique do
+    // usuário, muito depois de o construtor terminar; o `?.` é só a
+    // garantia de que a ordem aqui nunca vira exceção.
+    this._appsLauncher =
+      this._appsLauncherParams?.enabled && params.settings
+        ? new AppsLauncher({
+            settings: params.settings,
+            columns: this._appsLauncherColumns,
+            theme: this._theme,
+            // Enquanto a grade está aberta a dock fica visível, como no
+            // macOS: o auto-hide não pode engoli-la por baixo dela.
+            onVisibilityChanged: (open) => {
+              this._autoHide?.setForceShown(open);
+              // ...e visível POR CIMA dela: o launcher se joga para o topo
+              // do uiGroup a cada abertura (a ordem de criação entre ele e
+              // a chrome da dock não é garantida), então quem abre por
+              // último ganha. Subir a dock depois disso é o que mantém a
+              // pílula na frente da grade, como no macOS.
+              if (open) this._raiseToTop();
+              this._setLauncherOpen(open);
+            },
+            // Altura que a dock ocupa na borda de baixo, para o launcher
+            // não desenhar a última linha de ícones debaixo dela.
+            dockInset: () => this._launcherDockInset(),
+          })
+        : null;
+
+    this._showAppsIcon = new ShowAppsIcon({
+      iconSize: this._size.ICON,
+      // Só quando o launcher existe: sem ele NADA é passado, e o botão
+      // usa seu próprio fallback para o overview.
+      ...(this._appsLauncher
+        ? { onActivate: () => this._appsLauncher.toggle() }
+        : {}),
+    });
     this._panel.add_child(this._showAppsIcon);
     // O ícone é sempre criado — assim _suppressHover/_resumeHover/destroy
     // seguem sem condicionais — e apenas escondido quando a preferência
@@ -290,6 +361,17 @@ export class Dock {
 
     safe(() => Cursor.setDefault());
     safe(() => this._hideDropIndicator());
+    // PRIMEIRO de todos, e a dock é destruída e recriada o tempo todo
+    // (qualquer preferência, monitors-changed, wake, a série de reparo)
+    // — inclusive com a grade ABERTA na tela, o que aqui é rotina e não
+    // exceção. Enquanto o launcher existe ele pode ter um grab modal de
+    // pé e pode chamar de volta callbacks que resolvem contra actors da
+    // dock (o onVisibilityChanged toca o auto-hide). Destruí-lo depois
+    // do resto é a receita para grab órfão e exceção em callback
+    // pós-destroy; destruí-lo aqui fecha tudo isso com a dock ainda
+    // inteira por baixo.
+    safe(() => this._appsLauncher?.destroy());
+    this._appsLauncher = null;
     safe(() => this._autoHide?.destroy());
     this._autoHide = null;
     // Antes dos ícones: enquanto o patch do predicado de animação estiver
@@ -429,7 +511,7 @@ export class Dock {
         entry.kind === "folder"
           ? this._createFolderIcon(entry)
           : this._createAppIcon(entry);
-      this._connectIconDrag(icon);
+      this._connectIcon(icon);
       this._icons.set(id, icon);
       this._appsBox.add_child(icon);
     }
@@ -491,7 +573,7 @@ export class Dock {
         return;
       }
       const icon = this._createAppIcon(entry);
-      this._connectIconDrag(icon);
+      this._connectIcon(icon);
       this._recentIcons.set(entry.id, icon);
       this._recentsBox.insert_child_at_index(icon, index);
     });
@@ -542,7 +624,7 @@ export class Dock {
       indicatorStyle: this._indicatorStyle,
       clickToMinimize: this._clickToMinimize,
       onTogglePinned: (source) => this._togglePinned(source.app),
-      onMenuStateChanged: (isOpen) => this._autoHide?.setForceShown(isOpen),
+      onMenuStateChanged: (isOpen) => this._onIconMenuStateChanged(isOpen),
       attentionTracker: this._attentionTracker,
     });
   }
@@ -552,14 +634,35 @@ export class Dock {
       id: entry.id,
       iconSize: this._size.ICON,
       onRemove: (source) => this._removeItem(source.id),
-      onMenuStateChanged: (isOpen) => this._autoHide?.setForceShown(isOpen),
+      onMenuStateChanged: (isOpen) => this._onIconMenuStateChanged(isOpen),
     });
+  }
+
+  /**
+   * Menu de contexto de um ícone abriu ou fechou.
+   *
+   * Além de travar o auto-hide enquanto ele está aberto (o ponteiro sai
+   * da live area da dock para ir até o item), a ABERTURA fecha a grade de
+   * apps: o actor do menu nasce no uiGroup junto com o ícone, ou seja
+   * ABAIXO do overlay do launcher no z-order, e apareceria escondido
+   * atrás dele — com um grab próprio de pé e nada na tela.
+   */
+  _onIconMenuStateChanged(isOpen) {
+    this._autoHide?.setForceShown(isOpen);
+    if (isOpen) this._appsLauncher?.close();
   }
 
   // Vale para qualquer IconButton (app ou pasta): sem isso o hover
   // continuaria ativo durante o arrasto e o indicador de drop ficaria
-  // órfão no fim dele.
-  _connectIconDrag(icon) {
+  // órfão no fim dele. O clique é conectado aqui pelo mesmo motivo de
+  // ser um só lugar para as duas seções (principal e recentes).
+  _connectIcon(icon) {
+    // Clique que ATIVA (esquerdo ou meio; o direito abre menu e nem chega
+    // a emitir 'clicked') fecha a grade, como no macOS: o app vem para a
+    // frente e o Launchpad sai de cena. Conectado depois do handler
+    // interno do IconButton, então roda com a ativação já feita — quem
+    // devolve o teclado para a janela é o popModal do close().
+    this._signals.connect(icon, "clicked", () => this._appsLauncher?.close());
     this._signals.connect(icon._draggable, "drag-begin", () =>
       this._suppressHover(),
     );
@@ -988,6 +1091,54 @@ export class Dock {
     };
   }
 
+  /**
+   * Espaço que a dock ocupa na borda de baixo do monitor, em px.
+   *
+   * Geometria de REPOUSO (`_panelSize.h`, que _reposition() já grava sem
+   * a folga da magnificação) mais a margem até a borda — é a altura que o
+   * usuário vê, e não a do container, que inclui o headroom invisível de
+   * tooltip e zoom. Dock sem conteúdo não reserva nada: ela não sobe (ver
+   * _syncContentVisibility()), então reservar espaço deixaria uma faixa
+   * vazia embaixo da grade.
+   */
+  _launcherDockInset() {
+    if (this._isEmpty) return 0;
+    return (this._panelSize?.h ?? 0) + SIZE.BOTTOM_MARGIN;
+  }
+
+  /**
+   * Grade de apps abriu ou fechou.
+   *
+   * A dock continua clicável por cima dela (o launcher toma o grab modal
+   * no uiGroup, ver launcher.js), mas perde o corpo de vidro: sobram os
+   * ícones flutuando, como o Dock do macOS sobre o Launchpad. São dois
+   * caminhos porque são duas camadas diferentes — o painel troca de
+   * classe e o CSS tira fundo, rim e sombra; o backdrop sai por
+   * OPACIDADE, porque o que ele pinta é um Shell.BlurEffect, efeito de
+   * actor que nenhum seletor alcança.
+   *
+   * A ida usa a duração da abertura da grade e a volta a do fechamento:
+   * as duas coisas são o mesmo gesto e têm de andar juntas.
+   */
+  _setLauncherOpen(open) {
+    this._launcherOpen = open;
+    if (this._panel) {
+      if (open) this._panel.add_style_class_name("arcdock-panel-transparent");
+      else this._panel.remove_style_class_name("arcdock-panel-transparent");
+    }
+    if (this._blurBackdrop) {
+      this._blurBackdrop.remove_all_transitions();
+      this._blurBackdrop.ease({
+        opacity: open ? 0 : 255,
+        duration: open ? LAUNCHER.OPEN_MS : LAUNCHER.CLOSE_MS,
+        mode: open
+          ? Clutter.AnimationMode.EASE_IN_QUAD
+          : Clutter.AnimationMode.EASE_OUT_QUAD,
+      });
+    }
+    this._updateInputCatcher(this._hasVisibleWindowOnPrimary());
+  }
+
   _raiseToTop() {
     const parent = this._container?.get_parent();
     parent?.set_child_above_sibling(this._container, null);
@@ -1051,8 +1202,15 @@ export class Dock {
   }
 
   _updateInputCatcher(_hasWindow) {
-    if (this._container.visible) this._inputCatcher.show();
-    else this._inputCatcher.hide();
+    if (!this._inputCatcher) return;
+    // Com a grade de apps aberta o catcher fica ACIMA do overlay dela (é
+    // colado logo embaixo da dock no z-order), e um clique nele chamaria
+    // hideNow() — a dock desceria por baixo da grade que a mantém à
+    // vista. Enquanto a grade está aberta quem barra o clique fora da
+    // dock é o escudo do launcher.
+    if (this._launcherOpen || !this._container?.visible)
+      this._inputCatcher.hide();
+    else this._inputCatcher.show();
   }
 
   _hasVisibleWindowOnPrimary() {

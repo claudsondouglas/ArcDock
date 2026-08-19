@@ -56,6 +56,14 @@ export default class ArcDockExtension extends Extension {
                 log('[ArcDock] magnification-falloff changed');
                 this._restartDock('magnification-falloff-changed');
             });
+            this._connectSignal(this._settings, 'changed::apps-launcher-enabled', () => {
+                log('[ArcDock] apps-launcher-enabled changed');
+                this._restartDock('apps-launcher-enabled-changed');
+            });
+            this._connectSignal(this._settings, 'changed::apps-launcher-columns', () => {
+                log('[ArcDock] apps-launcher-columns changed');
+                this._restartDock('apps-launcher-columns-changed');
+            });
             this._connectSignal(Main.sessionMode, 'updated', () => {
                 try {
                     const mode = Main.sessionMode.currentMode;
@@ -164,6 +172,12 @@ export default class ArcDockExtension extends Extension {
                     this._settings?.get_double('magnification-scale') ?? 1.5,
                 falloff:
                     this._settings?.get_int('magnification-falloff') ?? 150,
+            },
+            appsLauncher: {
+                enabled:
+                    this._settings?.get_boolean('apps-launcher-enabled') ?? true,
+                columns:
+                    this._settings?.get_int('apps-launcher-columns') ?? 7,
             },
         });
         log('[ArcDock] dock created');

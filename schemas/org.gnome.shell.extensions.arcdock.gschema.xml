@@ -41,6 +41,17 @@
       <summary>Show Applications button</summary>
       <description>If true, the app grid launcher is displayed at the end of the dock. When it is hidden and no other item is present, the dock stays out of the way entirely.</description>
     </key>
+    <key name="apps-launcher-enabled" type="b">
+      <default>true</default>
+      <summary>Use the built-in apps launcher</summary>
+      <description>If true, the Applications button opens the extension's own full-screen app grid, with search and paging, instead of the GNOME overview. If false, the button falls back to the previous behaviour and simply opens the overview's application view.</description>
+    </key>
+    <key name="apps-launcher-columns" type="i">
+      <default>7</default>
+      <range min="4" max="12"/>
+      <summary>Apps per row in the launcher</summary>
+      <description>Number of applications shown side by side on each row of the launcher grid. Fewer columns mean larger, more spaced out cells and more pages; more columns fit more applications on a single page. Only used when the built-in apps launcher is enabled.</description>
+    </key>
     <key name="window-animations-enabled" type="b">
       <default>true</default>
       <summary>Animate windows from the dock</summary>

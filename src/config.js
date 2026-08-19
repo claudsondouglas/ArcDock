@@ -69,6 +69,69 @@ export const MAGNIFICATION = Object.freeze({
   RELAX_MS: 150,
 });
 
+// Launcher de apps em tela cheia, estilo Launchpad do macOS: o botão
+// Applications abre uma grade paginada com busca em vez do overview.
+// MIN/MAX_COLUMNS precisam bater com o <range> da key
+// "apps-launcher-columns" no gschema — pelo mesmo motivo de MAGNIFICATION:
+// o valor que chega de lá é reclampeado aqui, para que uma key adulterada
+// (dconf, arquivo de backup de outra versão) não peça uma grade de uma
+// coluna só ou de cinquenta.
+export const LAUNCHER = Object.freeze({
+  // Ícone bem maior que o da dock (SIZE.ICON): a grade ocupa a tela
+  // inteira e um ícone de dock ali dentro pareceria perdido.
+  ICON: 88,
+  MIN_COLUMNS: 4,
+  MAX_COLUMNS: 12,
+  DEFAULT_COLUMNS: 7,
+  // Folga em volta de cada célula da grade — é o que separa um ícone do
+  // vizinho, já que a célula em si tem o tamanho do ícone mais o rótulo.
+  CELL_PAD_X: 20,
+  CELL_PAD_Y: 16,
+  // Largura a partir da qual o nome do app recebe ellipsis. Fixa, e não
+  // derivada do ícone, porque o que precisa ficar alinhado é a COLUNA:
+  // rótulos de larguras diferentes desalinhariam a grade inteira.
+  LABEL_MAX_WIDTH: 132,
+  // Folgas MÍNIMAS em volta da grade: entre a faixa da busca e a primeira
+  // linha, e entre a última linha e a fileira de pontos. São mínimas
+  // porque o viewport é centralizado no espaço que sobra — o que passar
+  // disso vira respiro dos dois lados, não margem de um lado só.
+  GRID_MARGIN_TOP: 28,
+  GRID_MARGIN_BOTTOM: 40,
+  SEARCH_WIDTH: 320,
+  // Faixa reservada no topo para a busca, com o campo centralizado
+  // DENTRO dela. É uma faixa de altura explícita, e não uma margem no
+  // campo, porque margem de ClutterActor depende de o container honrá-la
+  // — a faixa é alocada pelo BoxLayout como qualquer outro filho e não
+  // depende de nada disso.
+  //
+  // Proporcional à tela pelo mesmo motivo do Launchpad: o respiro acima
+  // da busca é o que faz a grade parecer "flutuar" na tela em vez de
+  // começar colada na borda de cima. Os limites existem para telas muito
+  // baixas (onde a faixa comeria uma linha da grade) e muito altas (onde
+  // a proporção pura jogaria a busca para o meio do nada).
+  SEARCH_BAND_RATIO: 0.11,
+  SEARCH_BAND_MIN: 88,
+  SEARCH_BAND_MAX: 176,
+  // Folga entre a fileira de pontos e o topo da dock, que fica POR CIMA
+  // do launcher: sem ela os pontos encostariam na pílula de vidro.
+  DOCK_GAP: 16,
+  OPEN_MS: 220,
+  CLOSE_MS: 160,
+  // Acima de 1 porque o Launchpad ENTRA um pouco maior e assenta: a
+  // abertura parte de 1.06 e vai para 1.0. Um valor <= 1 inverteria o
+  // gesto e a grade pareceria ser empurrada para longe.
+  OPEN_SCALE: 1.06,
+  // Deslize entre páginas da grade e os pontinhos que indicam a página
+  // atual (mesma ideia dos dots do indicador de app rodando).
+  PAGE_MS: 250,
+  PAGE_DOT_SIZE: 8,
+  PAGE_DOT_SPACING: 10,
+  // Fundo: o desktop atrás da grade é borrado e escurecido, para que os
+  // ícones tenham contraste sobre qualquer papel de parede.
+  BLUR_RADIUS: 48,
+  BLUR_BRIGHTNESS: 0.9,
+});
+
 export const INDICATOR = Object.freeze({
   DOT_SIZE: 5,
   DOT_SPACING: 3,

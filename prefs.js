@@ -30,6 +30,16 @@ const MAGNIFY = Object.freeze({
   FALLOFF_PAGE: 50,
 });
 
+// Limites idênticos ao <range> da key "apps-launcher-columns" no gschema
+// (e a LAUNCHER.MIN/MAX_COLUMNS em src/config.js).
+const LAUNCHER_COLUMNS = Object.freeze({
+  MIN: 4,
+  MAX: 12,
+  DEFAULT: 7,
+  STEP: 1,
+  PAGE: 2,
+});
+
 const ICON = Object.freeze({
   ITEMS_PAGE: "folder-symbolic",
   FOLDER: "folder-symbolic",
@@ -255,6 +265,8 @@ export default class ArcDockPreferences extends ExtensionPreferences {
     recentAppsRow.add_suffix(recentAppsSwitch);
     recentAppsRow.activatable_widget = recentAppsSwitch;
 
+    appearancePage.add(this._makeAppsLauncherGroup(settings));
+
     this._buildItemsPage(window, settings);
 
     const communityPage = new Adw.PreferencesPage({
@@ -292,6 +304,68 @@ export default class ArcDockPreferences extends ExtensionPreferences {
     }));
 
     communityGroup.add(box);
+  }
+
+  /**
+   * Grupo "Applications launcher": o interruptor da grade própria e o
+   * número de colunas dela.
+   *
+   * Fica logo depois de "Behavior" porque é a row "Show Applications
+   * button" que decide se o botão existe — este grupo só decide o que ele
+   * abre. Colunas subordinadas ao switch pelo mesmo `sensitive` do grupo
+   * de Magnification.
+   */
+  _makeAppsLauncherGroup(settings) {
+    const group = new Adw.PreferencesGroup({ title: "Applications launcher" });
+
+    const toggleRow = new Adw.ActionRow({
+      title: "Applications launcher",
+      subtitle:
+        "The Applications button opens a full-screen app grid with search, instead of the GNOME overview.",
+    });
+    group.add(toggleRow);
+
+    const toggle = new Gtk.Switch({
+      active: settings.get_boolean("apps-launcher-enabled"),
+      valign: Gtk.Align.CENTER,
+    });
+    toggle.connect("notify::active", () => {
+      if (settings.get_boolean("apps-launcher-enabled") !== toggle.active)
+        settings.set_boolean("apps-launcher-enabled", toggle.active);
+    });
+    toggleRow.add_suffix(toggle);
+    toggleRow.activatable_widget = toggle;
+
+    const columnsRow = this._makeSliderRow({
+      title: "Apps per row",
+      subtitle: "How many applications fit side by side in the grid.",
+      lower: LAUNCHER_COLUMNS.MIN,
+      upper: LAUNCHER_COLUMNS.MAX,
+      step: LAUNCHER_COLUMNS.STEP,
+      page: LAUNCHER_COLUMNS.PAGE,
+      digits: 0,
+      marks: [LAUNCHER_COLUMNS.MIN, LAUNCHER_COLUMNS.DEFAULT, LAUNCHER_COLUMNS.MAX],
+      value: settings.get_int("apps-launcher-columns"),
+      format: (value) => `${Math.round(value)}`,
+      onChanged: (value) => {
+        const rounded = Math.round(value);
+        if (settings.get_int("apps-launcher-columns") !== rounded)
+          settings.set_int("apps-launcher-columns", rounded);
+      },
+    });
+    group.add(columnsRow);
+
+    // Mesmo padrão do grupo de Magnification: SYNC_CREATE já acerta o
+    // estado inicial, e o bind segue o switch — inclusive quando a key
+    // muda por fora (dconf, outra janela de prefs).
+    toggle.bind_property(
+      "active",
+      columnsRow,
+      "sensitive",
+      GObject.BindingFlags.SYNC_CREATE,
+    );
+
+    return group;
   }
 
   /**

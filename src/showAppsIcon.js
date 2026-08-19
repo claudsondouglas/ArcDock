@@ -24,6 +24,10 @@ export const ShowAppsIcon = GObject.registerClass(
       });
       this._iconSize = params.iconSize ?? SIZE.ICON;
       this._tooltipText = "Applications";
+      // Ação opcional: quando a dock tem um launcher próprio, ela injeta
+      // aqui o toggle dele. O botão não conhece o launcher — só sabe que
+      // existe "alguma coisa" a chamar no clique.
+      this._onActivate = params.onActivate ?? null;
 
       // Nome SEM sufixo -symbolic de propósito: em temas estilo macOS
       // (WhiteSur & cia) "view-app-grid" resolve para o Launchpad
@@ -83,8 +87,16 @@ export const ShowAppsIcon = GObject.registerClass(
     }
 
     _onClicked() {
+      // O bounce vem SEMPRE, antes de decidir o destino: o feedback de
+      // clique pertence ao botão, não à ação que ele dispara.
       triggerPressBounce(this);
-      Main.overview.show(OverviewControls.ControlsState.APP_GRID);
+      // Fallback obrigatório: a dock pode ser construída sem settings
+      // (extension.js a recria em várias situações) ou com o launcher
+      // desligado na preferência, e nesses casos ninguém passa
+      // onActivate. Sem o overview aqui o botão viraria um botão morto —
+      // visível, com tooltip e bounce, e sem abrir coisa alguma.
+      if (this._onActivate) this._onActivate();
+      else Main.overview.show(OverviewControls.ControlsState.APP_GRID);
     }
 
     destroy() {
