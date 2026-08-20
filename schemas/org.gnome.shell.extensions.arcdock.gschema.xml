@@ -99,6 +99,16 @@
       <summary>Dock app groups</summary>
       <description>JSON object mapping a group id to its definition, in the form { "groupId": { "name": string, "apps": [string] } }. Stored as JSON because nested dictionaries in GSettings are awkward to manipulate from both the shell and the preferences process.</description>
     </key>
+    <key name="launcher-layout" type="as">
+      <default>[]</default>
+      <summary>Apps launcher layout</summary>
+      <description>Internal ordered list of the launcher's top level items, each formatted as "type:value" (for example "app:firefox.desktop" or "folder:0d7f1b2c-..."). It is the arrangement the user made by dragging icons around, so the grid is no longer alphabetical; not meant to be edited by hand.</description>
+    </key>
+    <key name="launcher-folders" type="s">
+      <default>'{}'</default>
+      <summary>Apps launcher folders</summary>
+      <description>JSON object mapping a folder id to its definition, in the form { "uuid": { "name": string, "apps": [string] } }. The keys are the bare uuids: the "folder:" prefix only exists in launcher-layout, where folder ids share a list with items of other types. Stored as JSON because nested dictionaries in GSettings are awkward to manipulate; not meant to be edited by hand.</description>
+    </key>
     <key name="dock-items-migrated" type="b">
       <default>false</default>
       <summary>Legacy pinned apps migrated</summary>

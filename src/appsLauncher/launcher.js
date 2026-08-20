@@ -1,15 +1,25 @@
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
 
+import * as DND from 'resource:///org/gnome/shell/ui/dnd.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { DockTheme, LAUNCHER, State } from '../config.js';
+import { DesktopShortcut } from '../desktopShortcut.js';
 import { SignalTracker } from '../trackers.js';
 import { applyGlass } from '../glassEffect.js';
 import * as Cursor from '../cursor.js';
 import { AppGridIcon, CELL_LABEL_BAND, cellHoverHeadroom } from './appGridIcon.js';
 import { filterApps, getInstalledApps } from './appList.js';
+import { FolderPopup } from './folderPopup.js';
+import { GridSlot, SlotPaint } from './gridSlot.js';
+import {
+    LauncherItemType,
+    LauncherLayout,
+    makeLauncherId,
+} from './launcherLayout.js';
 
 /**
  * Faixa vertical reservada para a fileira de pontos de página.
@@ -26,6 +36,58 @@ const DOTS_BAND = LAUNCHER.PAGE_DOT_SIZE + 2 * LAUNCHER.PAGE_DOT_SPACING;
  * um único gesto de dois dedos atravessaria a paginação inteira.
  */
 const SMOOTH_SCROLL_STEP = 1.0;
+
+/**
+ * Quanto dura o voo do ícone da mão do usuário até a casa onde ele vai
+ * morar.
+ *
+ * O arraste termina com o app NO AR: o dnd solta o actor no ponto do
+ * ponteiro e, sem esta animação, ele simplesmente sumiria dali para
+ * reaparecer noutro lugar no quadro seguinte. O voo é o que amarra o
+ * gesto ao resultado — é o mesmo papel que a animação de minimizar faz
+ * entre a janela e o ícone da dock.
+ *
+ * A remontagem da grade ESPERA o voo terminar (ver _flushRefresh): o
+ * ícone de verdade nasce no quadro em que o fantasma acaba de pousar, e
+ * é essa emenda que faz os dois parecerem o mesmo objeto.
+ */
+const FLY_MS = 200;
+// Voo para dentro de uma pasta: mais longo e com destino menor, porque
+// aqui o ícone não pousa — ele CAI dentro de outra coisa. Encolher até
+// perto do tamanho de um sub-ícone da capa é o que conta essa história.
+const FLY_FOLDER_MS = 240;
+const FLY_FOLDER_SCALE = 0.42;
+// Folga do relógio que vigia o voo (ver _armFlyWatchdog). Generosa
+// de propósito: ele existe para a transição que NÃO chegou, e um
+// prazo curto o faria competir com um voo que só está atrasado por
+// um quadro perdido.
+const FLY_WATCHDOG_SLACK_MS = 400;
+
+/**
+ * Quanto dura o afastamento dos vizinhos enquanto o ícone passeia pela
+ * grade.
+ *
+ * Curto, e EASE_OUT_QUAD como toda entrada da extensão: o reflow é
+ * RESPOSTA a um ponteiro que já está em movimento. Uma animação longa
+ * chegaria atrasada — a grade ainda estaria se abrindo para a casa
+ * anterior quando o usuário já está duas casas adiante.
+ */
+const REFLOW_MS = 170;
+// Nomes das transições que o reflow controla, sempre por PROPRIEDADE e
+// nunca remove_all_transitions(): o hover e o quique do clique animam
+// escala e translação dentro da célula (no stage interno dela), e
+// derrubar tudo os congelaria no meio do movimento.
+const TRANSLATION_X = 'translation-x';
+const TRANSLATION_Y = 'translation-y';
+
+/**
+ * Faixa nas laterais do viewport que, com algo na mão, vira "virar a
+ * página". Sem ela não haveria como levar um app para outra página: a
+ * roda do mouse durante o arraste pertence ao dnd, e soltar para virar a
+ * página perderia o gesto.
+ */
+const PAGE_FLIP_EDGE = 56;
+const PAGE_FLIP_MS = 650;
 
 /**
  * O grab devolvido pelo pushModal está de fato com o seat?
@@ -82,6 +144,14 @@ export class AppsLauncher {
      * @param {(open: boolean) => void} params.onVisibilityChanged
      * @param {() => number} params.dockInset altura que a dock ocupa na
      *   borda de baixo, consultada a cada abertura
+     * @param {(desktopId: string) => boolean} [params.isAppPinned] o app
+     *   está fixado na dock? Vem de fora porque quem é dono do
+     *   `DockItemsStore` é a dock: uma segunda instância dele aqui gravaria
+     *   a mesma key duas vezes e brigaria com a supressão de eco que a dock
+     *   faz nas próprias escritas.
+     * @param {(desktopId: string) => void} [params.onTogglePinned] fixa ou
+     *   desafixa. Opcional JUNTO com o anterior: sem os dois, o item de
+     *   fixar simplesmente não aparece no menu.
      */
     constructor(params = {}) {
         // Guardado, mas SEM nenhum listener de `changed::`: quem observa as
@@ -109,6 +179,27 @@ export class AppsLauncher {
         // dá o valor do momento; um número passado na construção
         // congelaria a altura de quando a dock ainda nem tinha ícones.
         this._dockInset = params.dockInset ?? null;
+        // Os dois só valem em par: um "Fixar na dock" que sabe consultar o
+        // estado mas não sabe gravá-lo (ou o contrário) é um item de menu
+        // com rótulo mentiroso.
+        this._isAppPinned = typeof params.isAppPinned === 'function'
+            ? params.isAppPinned
+            : null;
+        this._onTogglePinned = typeof params.onTogglePinned === 'function'
+            ? params.onTogglePinned
+            : null;
+        // Uma instância para o launcher inteiro, e não uma por célula: os
+        // cancellables dela morrem no destroy() daqui, e pendurá-los nas
+        // células faria a primeira remontagem da grade cancelar a cópia
+        // que o usuário acabou de pedir.
+        this._shortcuts = new DesktopShortcut();
+        // Célula cujo menu de contexto está aberto. É o equivalente ao
+        // `isEditingName` do painel de pasta: enquanto ele existe, o
+        // teclado é do menu e o _onKeyPress daqui tem que sair da frente.
+        this._menuIcon = null;
+        // Montada uma vez (depois de _shortcuts e dos callbacks de fixar,
+        // que ela captura) e reusada por toda célula que a grade criar.
+        this._menuPolicyObject = this._menuPolicy();
 
         this._signals = new SignalTracker();
         this._state = State.HIDDEN;
@@ -121,8 +212,68 @@ export class AppsLauncher {
         this._grabRevokedId = 0;
         // Ver _startRedrawPump(): existe só enquanto o overlay está na tela.
         this._redrawPump = null;
+        // Ordem, pastas e persistência da grade. O launcher desenha; quem
+        // sabe o que existe, em que ordem e dentro de qual pasta é o
+        // LauncherLayout.
+        this._layout = new LauncherLayout(this._settings);
         this._apps = [];
+        // Entries do layout (apps e pastas) na ordem do usuário, e o
+        // subconjunto que está na tela. Com busca ativa `_filtered` deixa
+        // de ser um recorte de `_entries`: vira uma lista PLANA de apps,
+        // inclusive os que moram dentro de pastas.
+        this._entries = [];
+        this._entryByAppId = new Map();
         this._filtered = [];
+        // Estado do arraste em curso. `fromFolderId` só é preenchido
+        // quando o ícone saiu de um painel de pasta aberto — é o que
+        // transforma o drop na grade em "tirar da pasta".
+        this._drag = null;
+        // Casas da grade, indexadas pela MESMA posição de `_icons`: a casa
+        // existe mesmo vazia (a sobra da última linha), e é ela que pinta
+        // o buraco do ícone no ar e o destino do drop.
+        this._slots = [];
+        // A ÚNICA casa acesa durante um arraste (a reservada) e a pintura
+        // com que ela está acesa. Uma só porque os vizinhos fecham o
+        // buraco da origem — ver _reserveSlot. O par (casa, pintura) é
+        // guardado junto porque a mesma casa troca de pintura no meio do
+        // gesto.
+        this._paintedSlot = -1;
+        this._paintedAs = SlotPaint.NONE;
+        // Casa de ORIGEM do ícone no ar (-1 quando ele veio de dentro de
+        // uma pasta e ainda não ocupa lugar na grade). É de onde a fila do
+        // reflow parte, e é para onde a reserva volta num merge.
+        this._emptySlot = -1;
+        // Reflow ao vivo: para onde cada ícone está deslocado neste
+        // instante (índice na ordem visível -> {dx, dy}) e a casa
+        // reservada que gerou esse mapa. O mapa existe para animar só o
+        // que mudou, e a casa para sair cedo do caminho quente
+        // (handleDragOver roda a cada evento de movimento).
+        this._reflow = new Map();
+        this._reflowSlot = -1;
+        // Ícones em VOO (o actor que o dnd carregava, adotado por nós no
+        // drop) e a camada onde eles voam. Enquanto houver um no ar a
+        // remontagem da grade fica represada — ver _flushRefresh().
+        this._ghosts = [];
+        this._ghostLayer = null;
+        this._flying = 0;
+        // Relógio que garante que a represa acima sempre abre — ver
+        // _armFlyWatchdog().
+        this._flyWatchdogId = 0;
+        // Ícone de origem escondido à mão enquanto o fantasma dele voa.
+        this._flySource = null;
+        this._refreshPending = false;
+        // Ícone que a próxima remontagem deve fazer quicar: a pasta que
+        // acabou de nascer ou de engolir um app.
+        this._popId = null;
+        this._pageFlipId = 0;
+        this._pageFlipTarget = -1;
+        this._folderPopup = null;
+        this._popupKey = '';
+        this._openFolderId = null;
+        // Marca "este arraste mudou o layout", lida no fim do gesto para
+        // decidir se o painel da pasta volta ou fecha.
+        this._dragChanged = false;
+        this._refreshId = 0;
         this._pages = [];
         this._dots = [];
         this._icons = [];
@@ -164,7 +315,13 @@ export class AppsLauncher {
         // daqui para cima só custa um launcher que não abriu; depois do
         // grab, custaria a sessão.
         this._apps = getInstalledApps();
-        this._filtered = this._apps;
+        // reload() antes de build(): as preferências rodam noutro processo
+        // e a grade pode ter sido mexida por lá (ou por outra sessão)
+        // enquanto este launcher estava fechado.
+        this._layout.reload();
+        this._entries = this._layout.build(this._apps);
+        this._indexEntries();
+        this._filtered = this._entries;
         this._suppressSearchEcho = true;
         this._search.set_text('');
         this._suppressSearchEcho = false;
@@ -228,6 +385,19 @@ export class AppsLauncher {
         this._releaseGrab();
         this._state = State.HIDING;
         this._onVisibilityChanged?.(false);
+        // O painel é filho do uiGroup, não da grade: ninguém o esconderia
+        // junto, e ele ficaria de pé sobre a sessão com o launcher fechado.
+        this._closeFolder(false);
+        // Mesma história para o menu de contexto — e ele ainda segura um
+        // modal próprio, empilhado por cima do nosso. Fechado aqui, e não
+        // deixado para a destruição das células no fim do fade: durante
+        // esses CLOSE_MS a grade já não é interativa, e um menu de pé sobre
+        // ela seguraria o teclado da sessão.
+        this._closeIconMenu();
+        // Um ícone em voo mora na camada de fantasmas, que também é filha
+        // do uiGroup: sem isto ele continuaria atravessando a tela por
+        // cima da sessão enquanto o overlay some por baixo dele.
+        this._clearGhosts();
         // O ponteiro pode estar sobre uma célula na hora do fechamento; o
         // 'destroy' de cada AppGridIcon devolve o cursor, mas as células só
         // morrem no fim da animação e o ponteiro já está sobre a janela.
@@ -331,6 +501,28 @@ export class AppsLauncher {
         // sem avisar deixaria essa trava de pé sem ninguém para soltá-la.
         if (this.isOpen) safe(() => this._onVisibilityChanged?.(false));
         safe(() => Cursor.setDefault());
+        safe(() => this._cancelPageFlip());
+        safe(() => this._cancelFlyWatchdog());
+        safe(() => {
+            if (this._refreshId) {
+                GLib.source_remove(this._refreshId);
+                this._refreshId = 0;
+            }
+        });
+        // Antes das páginas: o painel tem células que apontam para o mesmo
+        // layout, e um painel vivo sobre uma grade destruída é um escudo
+        // reactive parado por cima da sessão inteira.
+        safe(() => this._folderPopup?.destroy());
+        this._folderPopup = null;
+        // Antes das páginas, pelo mesmo motivo do painel: o menu é filho do
+        // uiGroup e ainda pode estar segurando um modal próprio.
+        safe(() => this._closeIconMenu());
+        // Cancela qualquer cópia de .desktop em voo. O callback dela
+        // sobreviveria ao objeto e tocaria numa notificação de erro de uma
+        // extensão que já foi desabilitada.
+        safe(() => this._shortcuts?.destroy());
+        this._shortcuts = null;
+        safe(() => this._layout?.destroy());
         safe(() => this._stopRedrawPump());
         safe(() => this._clearPages());
         safe(() => this._clearDots());
@@ -345,6 +537,14 @@ export class AppsLauncher {
         // invisível por cima da sessão inteira.
         safe(() => this._shield?.destroy());
         this._shield = null;
+        // A camada dos fantasmas também é filha solta do uiGroup, e pode
+        // ter um ícone no ar neste exato instante: as transições saem
+        // primeiro (o onComplete delas volta para cá) e só então o actor.
+        safe(() => this._clearGhosts());
+        safe(() => this._ghostLayer?.destroy());
+        this._ghostLayer = null;
+        this._flying = 0;
+        this._refreshPending = false;
         // A timeline segura uma referência ao actor raiz (é dele que sai o
         // frame clock); parada acima e solta aqui, some junto com ele.
         this._redrawPump = null;
@@ -360,9 +560,21 @@ export class AppsLauncher {
         this._dotsBox = null;
         this._emptyLabel = null;
         this._onVisibilityChanged = null;
+        this._isAppPinned = null;
+        this._onTogglePinned = null;
+        this._menuIcon = null;
+        this._menuPolicyObject = null;
         this._settings = null;
         this._apps = [];
+        this._entries = [];
+        this._entryByAppId = new Map();
         this._filtered = [];
+        this._drag = null;
+        this._slots = [];
+        this._reflow = new Map();
+        this._reflowSlot = -1;
+        this._flySource = null;
+        this._layout = null;
         this._metrics = null;
         this._state = State.HIDDEN;
     }
@@ -537,15 +749,15 @@ export class AppsLauncher {
         this._signals.connect(this._search.clutter_text, 'text-changed', () =>
             this._onSearchChanged());
 
-        // O escudo fecha a grade pelo mesmo gesto do pixel vazio do
-        // overlay (soltar o botão), e consome o resto para que nada
-        // debaixo dele reaja enquanto a grade está aberta.
+        // O escudo só CONSOME: nada debaixo dele pode reagir enquanto a
+        // grade está aberta. Fechar era o comportamento anterior e saiu
+        // pelo mesmo motivo do pixel vazio do overlay (ver
+        // _onButtonRelease) — um arraste que termina fora da grade não é
+        // um pedido de fechar.
         this._signals.connect(this._shield, 'button-press-event', () =>
             Clutter.EVENT_STOP);
-        this._signals.connect(this._shield, 'button-release-event', () => {
-            this.close();
-            return Clutter.EVENT_STOP;
-        });
+        this._signals.connect(this._shield, 'button-release-event', () =>
+            Clutter.EVENT_STOP);
         this._signals.connect(this._shield, 'scroll-event', () =>
             Clutter.EVENT_STOP);
 
@@ -627,22 +839,24 @@ export class AppsLauncher {
         }
 
         this._grab = grab;
-        // Rede para o seat roubado DEPOIS da abertura (troca de VT, um
-        // cliente com grab exclusivo, o próprio Shell revogando): sem
-        // isto o overlay ficaria na tela sem receber mais nada. Só existe
-        // onde há a propriedade `revoked`; nas versões sem ela o handler
-        // simplesmente não é conectado.
+        // NADA é conectado a `notify::revoked`, e isso é deliberado.
+        //
+        // Grab do Clutter é pilha: QUALQUER modal empilhado por cima
+        // revoga o de baixo enquanto durar. E o Shell empilha modais o
+        // tempo todo por dentro de gestos perfeitamente normais — o
+        // arraste de um ícone (dnd.js dá pushModal no próprio actor de
+        // eventos assim que o gesto é reconhecido), um menu de contexto,
+        // um popup. Fechar a grade ali significava que segurar um ícone
+        // para movê-lo derrubava o launcher no primeiro frame do gesto.
+        //
+        // Perder o grab também não deixa o overlay inútil: ele é um actor
+        // reactive de tela cheia no uiGroup, então continua recebendo
+        // clique normalmente, e o foco de teclado segue no campo de busca
+        // (é para lá que o popModal do modal de cima devolve o foco). O
+        // grab dá EXCLUSIVIDADE, não a capacidade de receber evento — e o
+        // Shell, pelo mesmo motivo, não observa essa propriedade em lugar
+        // nenhum.
         this._grabRevokedId = 0;
-        if ('revoked' in grab) {
-            try {
-                this._grabRevokedId = grab.connect('notify::revoked', () => {
-                    if (grab.revoked) this.close();
-                });
-            } catch (e) {
-                logError(e, '[ArcDock] launcher notify::revoked connect failed');
-                this._grabRevokedId = 0;
-            }
-        }
         return true;
     }
 
@@ -818,6 +1032,19 @@ export class AppsLauncher {
             viewportHeight: rows * cellHeight + 2 * headroom,
             headroom,
             perPage: this._columns * rows,
+            // Área útil em coordenadas de STAGE, para o painel de pasta:
+            // a tela menos a faixa da busca em cima e a faixa da dock
+            // embaixo. É o retângulo dentro do qual o painel tem que
+            // caber, e ele não sabe nada da geometria do launcher.
+            bounds: {
+                x: monitor.x,
+                y: monitor.y + searchBand,
+                width: monitor.width,
+                height: Math.max(
+                    cellHeight,
+                    monitor.height - searchBand - bottomBand
+                ),
+            },
         };
         this._viewport.set_size(
             this._metrics.viewportWidth,
@@ -846,10 +1073,16 @@ export class AppsLauncher {
             gridHeight,
             perPage,
         } = this._metrics;
-        const apps = this._filtered;
+        const items = this._filtered;
+        // O arraste só existe na grade em repouso. Com busca ativa a lista
+        // é um recorte por relevância — arrastar ali reordenaria uma ordem
+        // que não é a que está na tela, e um app que mora dentro de uma
+        // pasta apareceria solto, pronto para ser "reordenado" para um
+        // lugar onde ele não está.
+        const dnd = this._isSearching() ? null : this._gridDnd();
 
-        this._emptyLabel.visible = apps.length === 0;
-        if (apps.length === 0) {
+        this._emptyLabel.visible = items.length === 0;
+        if (items.length === 0) {
             this._emptyLabel.set_width(viewportWidth);
             this._emptyLabel.ensure_style();
             const [, labelHeight] = this._emptyLabel.get_preferred_height(
@@ -862,7 +1095,7 @@ export class AppsLauncher {
             );
         }
 
-        const pageCount = Math.ceil(apps.length / perPage);
+        const pageCount = Math.ceil(items.length / perPage);
         for (let page = 0; page < pageCount; page++) {
             const pageActor = new St.BoxLayout({
                 vertical: true,
@@ -870,9 +1103,24 @@ export class AppsLauncher {
                 width: viewportWidth,
                 height: gridHeight,
             });
+            // A PÁGINA é o alvo de drop da reordenação, e não cada célula:
+            // o dnd acha o alvo subindo a árvore de actors a partir do
+            // pixel sob o ponteiro, então uma célula vazia (ou o vão entre
+            // duas) chega aqui de graça. As células não-reactive não
+            // atrapalham — o pick do dnd é PickMode.ALL.
+            if (dnd) {
+                pageActor._delegate = {
+                    handleDragOver: (source, _actor, x, y) =>
+                        this._handleGridDragOver(page, source, x, y),
+                    // O actor de arraste vai junto para o drop: é ele que
+                    // vira o fantasma que voa até a casa de destino.
+                    acceptDrop: (source, actor, x, y) =>
+                        this._acceptGridDrop(page, source, actor, x, y),
+                };
+            }
             for (let row = 0; row < rows; row++) {
                 const first = page * perPage + row * columns;
-                if (first >= apps.length) break;
+                if (first >= items.length) break;
                 const rowActor = new St.BoxLayout({
                     vertical: false,
                     reactive: false,
@@ -881,28 +1129,30 @@ export class AppsLauncher {
                 });
                 for (let column = 0; column < columns; column++) {
                     const index = first + column;
-                    // A célula entra mesmo vazia: a última linha da última
+                    // A casa entra mesmo vazia: a última linha da última
                     // página tem que ficar alinhada com as de cima, e não
-                    // centralizada por conta própria.
-                    const cell = new St.Bin({
-                        reactive: false,
-                        width: cellWidth,
-                        height: cellHeight,
-                        x_align: Clutter.ActorAlign.CENTER,
-                        y_align: Clutter.ActorAlign.CENTER,
+                    // centralizada por conta própria — e uma casa vazia é
+                    // um destino de drop tão válido quanto uma ocupada.
+                    const slot = new GridSlot({
+                        cellWidth,
+                        cellHeight,
+                        iconSize: LAUNCHER.ICON,
+                        // Onde a ARTE começa dentro da célula. O botão é
+                        // centralizado verticalmente e sua altura é a da
+                        // arte mais o rótulo mais o padding do CSS, então
+                        // a sobra de cima é exatamente CELL_PAD_Y — o
+                        // padding do botão se cancela na conta, e por isso
+                        // este número não precisa consultar o tema.
+                        artTop: LAUNCHER.CELL_PAD_Y,
                     });
-                    const app = apps[index];
-                    if (app) {
-                        const icon = new AppGridIcon({
-                            app,
-                            iconSize: LAUNCHER.ICON,
-                            labelWidth,
-                            onActivate: (activated) => this._launch(activated),
-                        });
-                        cell.set_child(icon);
+                    const item = items[index];
+                    if (item) {
+                        const icon = this._createIcon(item, labelWidth, dnd);
+                        slot.setIcon(icon);
                         this._icons[index] = icon;
                     }
-                    rowActor.add_child(cell);
+                    this._slots[index] = slot;
+                    rowActor.add_child(slot);
                 }
                 pageActor.add_child(rowActor);
             }
@@ -917,13 +1167,42 @@ export class AppsLauncher {
         // aparece quando há busca: a grade recém-aberta do Launchpad não
         // tem nenhum quadro aceso, e um realce parado na primeira célula
         // se confunde com o rastro de um hover que não saiu.
-        this._selectionVisible = (this._search?.get_text() ?? '') !== '';
-        this._setSelection(apps.length > 0 ? 0 : -1, false);
+        this._selectionVisible = this._isSearching();
+        this._setSelection(items.length > 0 ? 0 : -1, false);
     }
 
     _clearPages() {
+        // Não deveria acontecer: remontar a grade com um gesto em curso
+        // destrói o ícone de ORIGEM antes de o dnd processar o drop. O
+        // retrato de _onIconDragBegin salva o drop, mas a condição em si é
+        // um bug — e diagnosticá-la ao vivo custa um logout inteiro, então
+        // ela grita no journal na hora em que acontece.
+        //
+        // Uma vez por gesto: com o ícone de origem destruído o 'drag-end'
+        // dele não volta mais para cá, então `_drag` fica de pé até o
+        // próximo arraste e um segundo aviso seria eco do mesmo incidente.
+        if (this._drag && !this._drag.gridCleared) {
+            this._drag.gridCleared = true;
+            console.warn('[ArcDock] launcher grid rebuilt mid-drag');
+        }
+        // Sem animação: os ícones que carregam o reflow morrem duas
+        // linhas abaixo, e animar uma volta que ninguém vai ver só
+        // deixaria transições de pé sobre actors prestes a sumir.
+        this._cancelReflow(false);
+        this._clearTargetSlot();
+        this._clearGhosts();
+        // Cada célula destrói o próprio menu, e o fechamento dele avisa
+        // aqui (_onIconMenuStateChanged) — mas a referência é zerada à mão
+        // também: uma célula que morra por um caminho que não emita o
+        // fechamento deixaria _menuIcon apontando para um actor morto, e o
+        // teclado do launcher ficaria desviado para sempre.
+        this._menuIcon = null;
         for (const icon of this._icons) icon?.destroy();
         this._icons = [];
+        // Destruídas junto com a página (são filhas dela); aqui só soltamos
+        // as referências, para que nada volte a pintar uma casa morta.
+        this._slots = [];
+        this._flySource = null;
         for (const page of this._pages) page.destroy();
         this._pages = [];
         this._selection = -1;
@@ -1040,6 +1319,19 @@ export class AppsLauncher {
         this._setSelection(this._selection + dx + dy * this._metrics.columns);
     }
 
+    /**
+     * O que um clique numa célula faz: app abre, pasta abre o painel.
+     * Ponto único porque o mesmo AppGridIcon serve aos dois casos.
+     */
+    _activate(item, icon) {
+        if (!item) return;
+        if (item.type === LauncherItemType.FOLDER) {
+            this._openFolder(item, icon);
+            return;
+        }
+        this._launch(item.app);
+    }
+
     _launch(app) {
         if (!app) return;
         // Fecha ANTES de ativar: close() devolve o grab na primeira linha, e
@@ -1053,12 +1345,1043 @@ export class AppsLauncher {
         }
     }
 
+    // --- Itens, arraste e pastas ---
+
+    _isSearching() {
+        return (this._search?.get_text() ?? '').trim() !== '';
+    }
+
+    /**
+     * Índice appId -> entry, refeito a cada build().
+     *
+     * Existe para a BUSCA: filterApps() devolve Shell.App, e a célula
+     * precisa do entry (que carrega o id do layout). Reaproveitar o entry
+     * que o layout já criou — inclusive o de dentro de uma pasta — mantém
+     * um objeto só por app, e é o que faz a célula da busca ter o mesmo id
+     * da célula da grade em repouso.
+     */
+    _indexEntries() {
+        this._entryByAppId = new Map();
+        const visit = (entry) => {
+            if (entry?.type === LauncherItemType.APP && entry.appId)
+                this._entryByAppId.set(entry.appId, entry);
+        };
+        for (const entry of this._entries) {
+            if (entry?.type === LauncherItemType.FOLDER)
+                (entry.apps ?? []).forEach(visit);
+            else visit(entry);
+        }
+    }
+
+    _entryForApp(app) {
+        const appId = app?.get_id?.() ?? null;
+        const cached = appId ? this._entryByAppId.get(appId) : null;
+        if (cached) return cached;
+        // App instalado depois do último build() (a busca roda sobre a
+        // lista que open() capturou). Um entry improvisado deixa a célula
+        // funcionar; a posição definitiva dele chega na próxima abertura.
+        return {
+            type: LauncherItemType.APP,
+            id: makeLauncherId(LauncherItemType.APP, appId ?? ''),
+            appId,
+            app,
+            name: app?.get_name?.() ?? '',
+        };
+    }
+
+    _createIcon(item, labelWidth, dnd) {
+        return new AppGridIcon({
+            item,
+            iconSize: LAUNCHER.ICON,
+            labelWidth,
+            onActivate: (activated, icon) => this._activate(activated, icon),
+            dnd,
+            // Ao contrário do `dnd`, o menu vale também com busca ativa: a
+            // lista filtrada é de apps de verdade, e fixar um deles (ou
+            // criar um atalho) não mexe em ordem nenhuma.
+            //
+            // Um objeto SÓ, compartilhado por todas as células: a política
+            // não tem estado por ícone (quem é a célula chega como
+            // argumento no stateChanged), e uma remontagem cria centenas
+            // delas de uma vez.
+            menu: this._menuPolicyObject,
+        });
+    }
+
+    /**
+     * Política do menu de contexto das células.
+     *
+     * O par fixar/desafixar só entra quando a dock forneceu OS DOIS
+     * callbacks — o launcher nunca constrói um `DockItemsStore` próprio
+     * (ver o construtor).
+     */
+    _menuPolicy() {
+        const policy = {
+            createShortcut: (app) => this._shortcuts?.create(app),
+            // Lançar pelo menu é lançar: a grade sai de cena igual a um
+            // clique normal na célula. close() devolve o grab na primeira
+            // linha e só destrói as células no fim do fade, então chamá-la
+            // de dentro do 'activate' de um item não puxa o tapete do menu
+            // que ainda está se fechando por cima.
+            launch: () => this.close(),
+            stateChanged: (icon, isOpen) =>
+                this._onIconMenuStateChanged(icon, isOpen),
+        };
+        if (!this._isAppPinned || !this._onTogglePinned) return policy;
+        // Consultado a CADA abertura, e não guardado: a dock pode ter sido
+        // mexida (inclusive pelas preferências, noutro processo) entre um
+        // clique e o próximo.
+        policy.isPinned = (app) => {
+            const appId = app?.get_id?.() ?? null;
+            return appId ? this._isAppPinned?.(appId) === true : false;
+        };
+        policy.togglePinned = (app) => {
+            const appId = app?.get_id?.() ?? null;
+            if (appId) this._onTogglePinned?.(appId);
+        };
+        return policy;
+    }
+
+    _onIconMenuStateChanged(icon, isOpen) {
+        if (isOpen) this._menuIcon = icon;
+        else if (this._menuIcon === icon) this._menuIcon = null;
+    }
+
+    /** Existe um menu de contexto aberto agora? */
+    _isMenuOpen() {
+        if (!this._menuIcon) return false;
+        // Confere no ícone em vez de confiar no campo: se algum caminho
+        // destruir a célula sem passar pelo 'open-state-changed' do
+        // fechamento, o campo ficaria de pé para sempre e o teclado do
+        // launcher morreria junto com ele.
+        if (this._menuIcon.isMenuOpen) return true;
+        this._menuIcon = null;
+        return false;
+    }
+
+    _closeIconMenu() {
+        const icon = this._menuIcon;
+        this._menuIcon = null;
+        try {
+            icon?.closeMenu();
+        } catch (e) {
+            logError(e, '[ArcDock] launcher menu close failed');
+        }
+    }
+
+    _iconById(id) {
+        if (!id) return null;
+        for (const icon of this._icons) {
+            if (icon?.id === id) return icon;
+        }
+        return null;
+    }
+
+    /**
+     * Remonta a grade a partir do layout, preservando a página atual.
+     *
+     * Sempre adiada por idle (ver _scheduleRefresh): quem chama isto é um
+     * acceptDrop, e o dnd ainda está mexendo no actor de arraste e na
+     * célula de origem quando ele retorna — destruir a grade ali dentro
+     * puxaria o tapete de baixo dele.
+     */
+    _refreshGrid() {
+        if (!this._metrics) return;
+        const page = this._page;
+        this._entries = this._layout.build(this._apps);
+        this._indexEntries();
+        if (!this._isSearching()) this._filtered = this._entries;
+        this._rebuildPages();
+        if (page > 0) this._goToPage(page, false);
+        // Os fantasmas saem SÓ depois de a grade nova estar de pé: matá-los
+        // no fim do voo deixaria um quadro sem ícone nenhum no lugar (o
+        // rebuild só acontece no idle seguinte), e é justamente essa emenda
+        // que faz o app parecer ter pousado na casa.
+        this._clearGhosts();
+        if (this._popId) {
+            this._iconById(this._popId)?.playAppearPop();
+            this._popId = null;
+        }
+    }
+
+    /**
+     * Marca "o layout mudou" e agenda a remontagem para o próximo idle.
+     *
+     * TUDO que reage a um drop passa por aqui, inclusive fechar o painel
+     * da pasta: quem chama é um acceptDrop, e destruir ali dentro a célula
+     * de ORIGEM do arraste (o que fechar o painel faz) é mexer num actor
+     * que o dnd ainda tem na mão. Um idle depois, o gesto já acabou.
+     */
+    _scheduleRefresh() {
+        this._dragChanged = true;
+        // Com um ícone no ar a remontagem espera: ela destrói a grade
+        // inteira, e o fantasma que está voando mira uma casa dela. Quem
+        // solta a represa é o fim do voo (_flushRefresh).
+        if (this._flying > 0) {
+            this._refreshPending = true;
+            return;
+        }
+        if (this._refreshId) return;
+        this._refreshId = GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            this._refreshId = 0;
+            if (!this._actor || !this.isOpen) return GLib.SOURCE_REMOVE;
+            this._closeFolder(false);
+            this._refreshGrid();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    /**
+     * Último voo terminou: ou a remontagem represada acontece agora, ou
+     * não há remontagem nenhuma e o que sobrou de cenário do arraste tem
+     * que sair na mão.
+     *
+     * O segundo caso é o drop que não mudou nada (soltar o app na própria
+     * casa): ninguém vai remontar a grade, então é aqui que o fantasma
+     * morre, o buraco se fecha e o ícone escondido volta.
+     */
+    _flushRefresh() {
+        if (this._flying > 0) return;
+        if (this._refreshPending) {
+            this._refreshPending = false;
+            this._scheduleRefresh();
+            return;
+        }
+        this._clearGhosts();
+        this._clearTargetSlot();
+        this._restoreFlySource();
+    }
+
+    /** Política de arraste das células da GRADE. */
+    _gridDnd() {
+        return {
+            canMerge: (source, target) => this._canMerge(source, target),
+            merge: (source, target, dragActor) =>
+                this._merge(source, target, dragActor),
+            onDragBegin: (icon) => this._onIconDragBegin(icon, null),
+            onDragEnd: (icon) => this._onIconDragEnd(icon),
+            onMergeHover: (icon, hovering) =>
+                this._onMergeHover(icon, hovering),
+        };
+    }
+
+    /** Idem, para as células de DENTRO de um painel de pasta. */
+    _folderDnd(folderId) {
+        return {
+            canMerge: (source, target) => this._canMerge(source, target),
+            merge: (source, target, dragActor) =>
+                this._merge(source, target, dragActor),
+            onDragBegin: (icon) => this._onIconDragBegin(icon, folderId),
+            onDragEnd: (icon) => this._onIconDragEnd(icon),
+            onMergeHover: (icon, hovering) =>
+                this._onMergeHover(icon, hovering),
+        };
+    }
+
+    _onIconDragBegin(icon, fromFolderId) {
+        // Retrato do que o DROP precisa saber, tirado enquanto o ícone
+        // está vivo. O gesto termina no dnd, que pergunta ao `_delegate`
+        // da origem qual é o item — e se alguma coisa destruir a grade no
+        // meio do caminho, esse ícone já teve o `_item` zerado e o drop
+        // seria recusado por todos os alvos (nem mover, nem virar pasta).
+        // O modelo só é mexido NO drop, então o retrato continua valendo:
+        // ele descreve o item, não o actor.
+        this._drag = {
+            icon,
+            fromFolderId,
+            id: icon?.id ?? null,
+            item: icon?.item ?? null,
+            // Ver _clearPages(): marca de "a grade caiu no meio deste
+            // gesto", para o aviso sair uma vez só.
+            gridCleared: false,
+        };
+        this._dragChanged = false;
+        // A casa de origem acende como BURACO: neste primeiro instante
+        // ainda é ela a casa RESERVADA — nada se moveu, e é para ali que
+        // o app volta se o gesto acabar sem sair do lugar. Do primeiro
+        // handleDragOver em diante a reserva passa a ser a casa sob o
+        // ponteiro, e esta se fecha junto com o reflow (_reserveSlot).
+        const at = this._icons.indexOf(icon);
+        this._emptySlot = at;
+        // Guardada também como reserva vigente do reflow: enquanto o
+        // ponteiro não sair da casa de onde o ícone saiu não há nada a
+        // recalcular — com `from === k` ninguém se desloca.
+        this._reflowSlot = at;
+        this._paintSlot(at, SlotPaint.EMPTY);
+        // O painel sai da frente enquanto o app está no ar: o escudo dele
+        // cobre a grade inteira, e é a GRADE que precisa receber este drop
+        // (é assim que se tira um app da pasta). Sai por opacidade, não
+        // destruído: destruí-lo mataria a célula de origem no meio do
+        // gesto, e é ela que o dnd usa para desfazer um drop recusado.
+        if (fromFolderId) this._folderPopup?.setDragMode(true);
+    }
+
+    /**
+     * O ponteiro parou sobre um ícone que aceita virar pasta.
+     *
+     * Desfaz o reflow e devolve a reserva à casa de ORIGEM: a resposta ao
+     * drop deixou de ser "entra nesta posição" e passou a ser "junta com
+     * este ícone", e por causa dele nada vai se reorganizar. A grade
+     * aberta no meio do caminho continuaria prometendo um lugar que este
+     * drop não usa.
+     *
+     * Quando o ponteiro sai do ícone, o handleDragOver da página volta a
+     * correr e o reflow se refaz sozinho.
+     */
+    _onMergeHover(_icon, hovering) {
+        if (!hovering) return;
+        this._cancelReflow();
+        this._paintSlot(this._emptySlot, SlotPaint.EMPTY);
+    }
+
+    _onIconDragEnd(icon) {
+        const fromFolderId = this._drag?.fromFolderId ?? null;
+        this._drag = null;
+        this._cancelPageFlip();
+        // Com um voo em curso o ícone de origem VOLTA a se esconder: o
+        // AppGridIcon já se mostrou de novo (é o que ele faz no fim de
+        // todo gesto), e deixá-lo aceso poria o mesmo app em dois lugares
+        // enquanto o fantasma atravessa a tela. Quem o traz de volta é a
+        // grade nova — ou _flushRefresh, quando não há grade nova.
+        //
+        // O REFLOW fica de pé pelo mesmo motivo: o fantasma pousa
+        // exatamente na casa que os vizinhos abriram, e zerar as
+        // translações agora faria a grade saltar para trás e, um idle
+        // depois, para a frente outra vez. Quem as apaga é a remontagem
+        // (os ícones novos nascem sem translação nenhuma).
+        //
+        // A condição é o VOO, e não o ícone estar na grade: um app que veio
+        // de dentro de uma pasta tem a célula de origem no painel, e testar
+        // pela grade zeraria o reflow no meio do voo justamente nesse caso.
+        if (this._flying > 0) {
+            if (this._icons.indexOf(icon) !== -1) {
+                this._flySource = icon;
+                icon.hide();
+            }
+        } else {
+            this._clearTargetSlot();
+        }
+        if (!fromFolderId) return;
+        // Drop aceito: a pasta mudou, e quem fecha o painel é o idle de
+        // _scheduleRefresh (fechar aqui destruiria a célula de origem
+        // ainda dentro do gesto). Drop recusado ou cancelado: nada mudou,
+        // e o painel volta como estava.
+        if (!this._dragChanged) this._folderPopup?.setDragMode(false);
+    }
+
+    /**
+     * O item da ORIGEM do arraste: do próprio ícone enquanto ele existe,
+     * do retrato de _onIconDragBegin quando ele já não existe mais.
+     *
+     * O retrato só vale para o ícone que ABRIU este arraste. Um source
+     * desconhecido (outro draggable do Shell subindo pela mesma árvore)
+     * nunca pode herdar o item de um gesto que não é dele — seria um drop
+     * aceito em nome do app errado.
+     */
+    _dragItemOf(source) {
+        if (source?.item) return source.item;
+        if (!this._drag || source !== this._drag.icon) return null;
+        return this._drag.item ?? null;
+    }
+
+    /** Idem para o id do layout, que é o que o modelo consome. */
+    _dragIdOf(source) {
+        if (source?.id) return source.id;
+        if (!this._drag || source !== this._drag.icon) return null;
+        return this._drag.id ?? null;
+    }
+
+    // --- Juntar em pasta ---
+
+    _canMerge(sourceIcon, targetIcon) {
+        if (this._isSearching()) return false;
+        const source = this._dragItemOf(sourceIcon);
+        // O alvo é o ícone sob o ponteiro, vivo por definição: ele é quem
+        // está sendo perguntado.
+        const target = targetIcon?.item ?? null;
+        if (!source || !target || source === target) return false;
+        // Pasta dentro de pasta não existe aqui, do mesmo jeito que no
+        // Launchpad: um nível só mantém o gesto de arrastar previsível.
+        if (source.type !== LauncherItemType.APP) return false;
+        if (target.type === LauncherItemType.FOLDER) {
+            return !(target.apps ?? []).some(entry => entry?.id === source.id);
+        }
+        return target.type === LauncherItemType.APP;
+    }
+
+    _merge(sourceIcon, targetIcon, dragActor) {
+        const source = this._dragItemOf(sourceIcon);
+        const target = targetIcon?.item ?? null;
+        if (!source || !target) return false;
+        const fromFolderId = this._drag?.fromFolderId ?? null;
+
+        let changed = false;
+        // O id da pasta RESULTANTE, guardado para o quique de chegada: ele
+        // roda no ícone novo, depois da remontagem, e a essa altura o
+        // targetIcon daqui já foi destruído.
+        let folderId = null;
+        if (target.type === LauncherItemType.FOLDER) {
+            // addToFolder já tira o app da pasta de origem, quando havia
+            // uma; a pasta que ficar com um membro só se dissolve sozinha
+            // no próximo build().
+            changed = this._layout.addToFolder(target.folderId, source.id);
+            if (changed) folderId = target.id;
+        } else if (fromFolderId) {
+            // Saiu de uma pasta e caiu em cima de um app solto: é uma
+            // pasta nova, e o app tem que deixar a antiga antes.
+            changed = this._layout.removeFromFolder(fromFolderId, source.id, -1);
+            if (changed) {
+                folderId = this._layout.createFolder(target.id, source.id);
+                changed = folderId !== null;
+            }
+        } else {
+            folderId = this._layout.createFolder(target.id, source.id);
+            changed = folderId !== null;
+        }
+        if (!changed) return false;
+
+        // Voo primeiro, agendamento depois: é o voo que incrementa o
+        // contador que faz _scheduleRefresh represar a remontagem.
+        this._flyGhost(dragActor, targetIcon.getArtRect(), {
+            duration: FLY_FOLDER_MS,
+            scale: FLY_FOLDER_SCALE,
+            fade: true,
+        });
+        this._popId = folderId;
+        this._scheduleRefresh();
+        return true;
+    }
+
+    // --- Reordenar (a página é o alvo) ---
+
+    _isReorderSource(source) {
+        return (
+            !this._isSearching() &&
+            source instanceof AppGridIcon &&
+            // Retrato como reserva: um ícone destruído no meio do gesto
+            // não tem mais `item`, e sem isto o drop seria recusado
+            // justamente no instante em que o usuário soltou.
+            !!this._dragItemOf(source)
+        );
+    }
+
+    _handleGridDragOver(page, source, x, y) {
+        if (!this._isReorderSource(source)) return DND.DragMotionResult.NO_DROP;
+        this._maybePageFlip(x);
+        this._reserveSlot(this._dropSlotAt(page, x, y));
+        return DND.DragMotionResult.MOVE_DROP;
+    }
+
+    _acceptGridDrop(page, source, dragActor, x, y) {
+        if (!this._isReorderSource(source)) return false;
+        const sourceId = this._dragIdOf(source);
+        if (!sourceId) return false;
+        const index = this._dropSlotAt(page, x, y);
+        this._cancelPageFlip();
+        // O retângulo é lido AGORA, com a grade ainda de pé: a casa é
+        // destruída pela remontagem que este drop agenda, e o voo mira
+        // onde ela estava no instante em que o usuário soltou.
+        const rect = this._slots[index]?.artRect() ?? null;
+
+        const fromFolderId = this._drag?.fromFolderId ?? null;
+        // O índice é o da CASA sob o ponteiro, e é para lá que o app vai:
+        // é a mesma coordenada que moveTo() e removeFromFolder() esperam
+        // (posição final na ordem visível, já sem o item que se moveu).
+        const changed = fromFolderId
+            ? this._layout.removeFromFolder(fromFolderId, sourceId, index)
+            : this._layout.moveTo(sourceId, index);
+
+        this._flyGhost(dragActor, rect, { duration: FLY_MS });
+        if (changed) this._scheduleRefresh();
+        // true mesmo quando nada mudou: soltar no mesmo lugar é um drop
+        // TRATADO, e devolver false faria a arte voar de volta à origem
+        // como se o gesto tivesse falhado.
+        return true;
+    }
+
+    /**
+     * Qual CASA da grade está sob um ponto da página.
+     *
+     * `x`/`y` são locais à página (o dnd já converteu), então o deslize
+     * entre páginas e a folga do hover no topo do viewport não entram na
+     * conta. Piso e não arredondamento: o que se procura não é a fronteira
+     * entre duas células, é a célula inteira — o alvo do arraste é a casa,
+     * e ela ocupa toda a largura da coluna.
+     *
+     * Devolve o índice na lista visível, que é o mesmo espaço de
+     * coordenadas de moveTo(): soltar sobre a casa `k` põe o app na
+     * posição `k`, empurrando o resto para o lado.
+     */
+    _dropSlotAt(page, x, y) {
+        const m = this._metrics;
+        const onPage = Math.max(
+            0,
+            Math.min(m.perPage, this._filtered.length - page * m.perPage)
+        );
+        const rowsOnPage = Math.max(1, Math.ceil(onPage / m.columns));
+        const row = Math.max(
+            0,
+            Math.min(rowsOnPage - 1, Math.floor(y / m.cellHeight))
+        );
+        const originX = Math.round(
+            (m.viewportWidth - m.columns * m.cellWidth) / 2
+        );
+        const col = Math.max(
+            0,
+            Math.min(m.columns - 1, Math.floor((x - originX) / m.cellWidth))
+        );
+        // As casas vazias do fim da última linha não são posições da
+        // lista: soltar em qualquer uma delas é "vai para o fim". O teto
+        // sobe um quando o app vem de dentro de uma pasta — ele ainda não
+        // ocupa lugar nenhum na grade, então há uma casa a mais para
+        // entrar.
+        const extra = this._drag?.fromFolderId ? 1 : 0;
+        const last = Math.max(0, this._filtered.length - 1 + extra);
+        return Math.min(last, page * m.perPage + row * m.columns + col);
+    }
+
+    /**
+     * Reserva a casa `index` para o ícone que está no ar: acende ela e
+     * empurra os vizinhos para abri-la.
+     *
+     * UMA casa acesa por vez, e sempre a reservada. Com o reflow os
+     * vizinhos fecham o buraco da origem no mesmo movimento, então o
+     * único vazio de verdade na tela é a casa onde o app vai cair — duas
+     * casas acesas anunciariam dois lugares livres, e um deles seria
+     * mentira.
+     */
+    _reserveSlot(index) {
+        this._paintSlot(index, SlotPaint.TARGET);
+        this._applyReflow(index);
+    }
+
+    /**
+     * Acende uma casa e apaga a que estava acesa.
+     *
+     * Guarda o par (casa, pintura) porque a MESMA casa troca de pintura
+     * no meio do gesto: a de origem nasce como BURACO e vira ALVO no
+     * instante em que o ponteiro volta para cima dela.
+     */
+    _paintSlot(index, paint) {
+        if (index === this._paintedSlot && paint === this._paintedAs) return;
+        if (index !== this._paintedSlot)
+            this._slots[this._paintedSlot]?.setPaint(SlotPaint.NONE);
+        this._paintedSlot = index;
+        this._paintedAs = paint;
+        this._slots[index]?.setPaint(paint);
+    }
+
+    /** Apaga a casa acesa e desfaz o reflow: o gesto acabou. */
+    _clearTargetSlot() {
+        this._slots[this._paintedSlot]?.setPaint(SlotPaint.NONE);
+        this._paintedSlot = -1;
+        this._paintedAs = SlotPaint.NONE;
+        this._emptySlot = -1;
+        this._cancelReflow();
+    }
+
+    // --- Reflow ao vivo (os vizinhos abrindo a casa) ---
+
+    /**
+     * Reorganiza a grade para abrir a casa `index`.
+     *
+     * Translação e NUNCA remontagem: cada _rebuildPages() recria centenas
+     * de texturas de ícone, e fazer isso por evento de movimento é
+     * impagável. As casas (GridSlot) ficam exatamente onde estão — o que
+     * se move é só o ícone dentro delas.
+     */
+    _applyReflow(index) {
+        // handleDragOver roda a cada evento de movimento: enquanto o
+        // ponteiro anda DENTRO da mesma casa não há nada a recalcular, e
+        // reiniciar as mesmas translações a cada quadro as deixaria
+        // presas no primeiro instante do ease, sem nunca chegar.
+        if (index === this._reflowSlot) return;
+        this._reflowSlot = index;
+        this._setReflow(this._reflowShifts(index));
+    }
+
+    /**
+     * Quem se desloca, e para onde, se o ícone no ar tomar a casa `k`.
+     *
+     * `from` é a casa que ele ocupa hoje (-1 quando veio de dentro de uma
+     * pasta e ainda não ocupa nenhuma): a fila entre `from` e `k` anda uma
+     * casa no sentido contrário ao do ícone, e vindo de uma pasta é a fila
+     * inteira a partir de `k` que anda para a frente.
+     *
+     * O efeito para na borda da PÁGINA. Se a fila não couber inteira na
+     * página que está na tela, ela simplesmente não é mostrada: o ícone da
+     * ponta iria para uma página que ninguém está vendo, e deixá-lo parado
+     * enquanto o vizinho avança poria dois ícones na mesma casa — que se
+     * lê pior do que nada se mexendo.
+     *
+     * @returns {Map<number, {dx: number, dy: number}>}
+     */
+    _reflowShifts(k) {
+        const shifts = new Map();
+        const m = this._metrics;
+        if (!m || k < 0) return shifts;
+        const from = this._emptySlot;
+        if (from === k) return shifts;
+
+        const page = Math.floor(k / m.perPage);
+        const pageStart = page * m.perPage;
+        const pageEnd = pageStart + m.perPage - 1;
+
+        let lo, hi, delta;
+        if (from === -1) {
+            lo = k;
+            hi = this._icons.length - 1;
+            delta = 1;
+        } else if (from < k) {
+            lo = from + 1;
+            hi = k;
+            delta = -1;
+        } else {
+            lo = k;
+            hi = from - 1;
+            delta = 1;
+        }
+        // Recortado na página ANTES de decidir se cabe: o que está fora da
+        // tela não se mexe de qualquer jeito, e é a ponta do trecho
+        // visível que decide.
+        lo = Math.max(lo, pageStart);
+        hi = Math.min(hi, pageEnd);
+        if (lo > hi) return shifts;
+        if (delta === 1 ? hi + 1 > pageEnd : lo - 1 < pageStart) return shifts;
+
+        for (let index = lo; index <= hi; index++) {
+            if (!this._icons[index]) continue;
+            shifts.set(index, this._cellDelta(index, index + delta, pageStart));
+        }
+        return shifts;
+    }
+
+    /**
+     * Deslocamento entre duas casas da mesma página, em pixels.
+     *
+     * Aritmética das métricas, e não geometria de actor: toda linha tem
+     * `columns` casas (as sobras entram vazias) e todas têm o mesmo
+     * tamanho, então a conta é exata — e imune ao fato de o ícone já estar
+     * transladado, que é justamente o que uma leitura de posição
+     * transformada não seria.
+     */
+    _cellDelta(from, to, pageStart) {
+        const m = this._metrics;
+        const a = from - pageStart;
+        const b = to - pageStart;
+        return {
+            dx: ((b % m.columns) - (a % m.columns)) * m.cellWidth,
+            dy:
+                (Math.floor(b / m.columns) - Math.floor(a / m.columns)) *
+                m.cellHeight,
+        };
+    }
+
+    /** Anima só a diferença entre o reflow vigente e o novo. */
+    _setReflow(shifts) {
+        for (const index of this._reflow.keys()) {
+            if (!shifts.has(index)) this._easeIcon(this._icons[index], 0, 0);
+        }
+        for (const [index, delta] of shifts) {
+            const current = this._reflow.get(index);
+            if (current && current.dx === delta.dx && current.dy === delta.dy)
+                continue;
+            this._easeIcon(this._icons[index], delta.dx, delta.dy);
+        }
+        this._reflow = shifts;
+    }
+
+    /**
+     * Devolve todo mundo ao lugar.
+     *
+     * NÃO é chamado quando o drop é aceito: a grade nova só nasce quando o
+     * fantasma termina o voo (ver _flushRefresh), e zerar as translações
+     * antes disso faria a grade saltar para trás e, um idle depois, para a
+     * frente de novo. Nesse caminho quem apaga o reflow é a remontagem.
+     */
+    _cancelReflow(animate = true) {
+        this._reflowSlot = -1;
+        if (this._reflow.size === 0) return;
+        const shifted = this._reflow;
+        this._reflow = new Map();
+        for (const index of shifted.keys())
+            this._easeIcon(this._icons[index], 0, 0, animate);
+    }
+
+    _easeIcon(icon, dx, dy, animate = true) {
+        if (!icon) return;
+        icon.remove_transition(TRANSLATION_X);
+        icon.remove_transition(TRANSLATION_Y);
+        if (!animate) {
+            icon.translation_x = dx;
+            icon.translation_y = dy;
+            return;
+        }
+        icon.ease({
+            translation_x: dx,
+            translation_y: dy,
+            duration: REFLOW_MS,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+        });
+    }
+
+    // --- Voo do ícone até a casa ---
+
+    /**
+     * Adota o actor que o dnd carregava e o faz voar até `rect`.
+     *
+     * Adotar é literal: o dnd destrói o actor de arraste no fim do drop
+     * **se ele ainda for filho do uiGroup** (dnd.js), então reparentá-lo
+     * para a nossa camada é o que nos dá a posse dele. Sem isso não há
+     * animação possível — o ícone simplesmente deixa de existir no quadro
+     * do drop.
+     *
+     * A reparentagem preserva o CENTRO visível, e não o canto: o actor
+     * pode chegar com escala do dnd e com pivô em qualquer lugar, e só o
+     * centro do retângulo transformado é a mesma coisa nos dois espaços.
+     *
+     * @param {Clutter.Actor|null} dragActor
+     * @param {{x:number,y:number,width:number,height:number}|null} rect
+     *   destino em coordenadas de stage
+     * @param {object} [opts] `duration`, `scale` (fração do tamanho do
+     *   destino) e `fade` (some ao chegar, para o voo até uma pasta)
+     */
+    _flyGhost(dragActor, rect, opts = {}) {
+        if (!dragActor || !rect) return;
+        const layer = this._ensureGhostLayer();
+        if (!layer) return;
+
+        const scale = dragActor.scale_x || 1;
+        const [visualWidth, visualHeight] = dragActor.get_transformed_size();
+        const [visualX, visualY] = dragActor.get_transformed_position();
+        const width = visualWidth / scale;
+        const height = visualHeight / scale;
+        const centerX = visualX + visualWidth / 2;
+        const centerY = visualY + visualHeight / 2;
+        const [layerX, layerY] = this._ghostLayerOrigin(layer);
+
+        // Nada de NaN daqui para baixo. `get_transformed_*` devolve NaN
+        // sobre um actor sem alocação válida, e um único NaN nesta conta
+        // se espalha por tudo: set_position(NaN) faz clutter_actor_allocate
+        // abortar por asserção, o actor nunca recebe alocação, e a ease
+        // que deveria decrementar _flying no fim pode nunca chegar lá —
+        // o que represa a grade PARA SEMPRE (ver _flushRefresh) e mata o
+        // arraste do resto da sessão. Sem voo é feio; com NaN é fatal.
+        const geometry = [
+            scale, width, height, centerX, centerY, layerX, layerY,
+            rect.x, rect.y, rect.width, rect.height,
+        ];
+        if (!geometry.every(Number.isFinite)) {
+            console.warn('[ArcDock] launcher flight geometry not finite; skipping');
+            return;
+        }
+
+        try {
+            dragActor.get_parent()?.remove_child(dragActor);
+            layer.add_child(dragActor);
+        } catch (e) {
+            logError(e, '[ArcDock] launcher drag actor adoption failed');
+            return;
+        }
+        dragActor.set_pivot_point(0.5, 0.5);
+        dragActor.set_scale(scale, scale);
+        dragActor.set_position(
+            Math.round(centerX - layerX - width / 2),
+            Math.round(centerY - layerY - height / 2)
+        );
+
+        const duration = opts.duration ?? FLY_MS;
+        const target = (rect.width * (opts.scale ?? 1)) / Math.max(1, width);
+        this._ghosts.push(dragActor);
+        this._flying++;
+        this._armFlyWatchdog(duration);
+        dragActor.remove_all_transitions();
+        dragActor.ease({
+            x: Math.round(rect.x - layerX + (rect.width - width) / 2),
+            y: Math.round(rect.y - layerY + (rect.height - height) / 2),
+            scale_x: target,
+            scale_y: target,
+            opacity: opts.fade ? 0 : 255,
+            duration,
+            // EASE_OUT_QUAD como toda entrada da extensão: rápido ao sair
+            // da mão e assentando na casa, que é o contrário de um ícone
+            // que parece ter sido cuspido para o lugar.
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            onComplete: () => {
+                this._flying = Math.max(0, this._flying - 1);
+                this._flushRefresh();
+            },
+        });
+    }
+
+    /**
+     * Canto superior esquerdo da camada de fantasmas, em coordenadas de
+     * stage.
+     *
+     * Pelo PAI e não pela camada: ela é criada e usada no mesmo instante
+     * (o primeiro voo da sessão), e um actor que ainda não passou por um
+     * ciclo de alocação não tem transformação válida —
+     * `get_transformed_position()` ali devolve NaN. O uiGroup, esse,
+     * está alocado desde que a sessão subiu, e a camada mora em (0, 0)
+     * dentro dele, então a soma é exata e não depende de alocação
+     * nenhuma. A leitura direta continua valendo como caminho normal
+     * assim que ela existe de verdade.
+     */
+    _ghostLayerOrigin(layer) {
+        const [x, y] = layer.get_transformed_position();
+        if (Number.isFinite(x) && Number.isFinite(y)) return [x, y];
+        const parent = layer.get_parent();
+        if (!parent) return [0, 0];
+        const [parentX, parentY] = parent.get_transformed_position();
+        if (!Number.isFinite(parentX) || !Number.isFinite(parentY))
+            return [0, 0];
+        return [parentX + layer.x, parentY + layer.y];
+    }
+
+    /**
+     * Rede de segurança da represa: o voo TEM que acabar.
+     *
+     * `_flying` só volta a zero no `onComplete` da ease, e uma transição
+     * que nunca completa (actor sem alocação, transição removida por um
+     * caminho que não passa por `_clearGhosts`, o que for) deixa
+     * `_refreshPending` de pé para sempre: a grade nunca mais remonta,
+     * o ícone de origem fica escondido e todo drop seguinte vira um
+     * gesto sem efeito nenhum. O sintoma é o arraste "funcionar só na
+     * primeira vez".
+     *
+     * O relógio é a única testemunha independente disso. Ele não é o
+     * caminho normal — quando ele dispara, alguma coisa saiu do trilho e
+     * o journal precisa dizer isso — mas transforma uma quebra
+     * permanente num soluço de meio segundo.
+     */
+    _armFlyWatchdog(duration) {
+        this._cancelFlyWatchdog();
+        const wait = Math.max(0, Math.round(duration)) + FLY_WATCHDOG_SLACK_MS;
+        this._flyWatchdogId = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT,
+            wait,
+            () => {
+                this._flyWatchdogId = 0;
+                if (this._flying === 0) return GLib.SOURCE_REMOVE;
+                console.warn(
+                    '[ArcDock] launcher flight never landed; releasing the grid'
+                );
+                this._flying = 0;
+                this._flushRefresh();
+                return GLib.SOURCE_REMOVE;
+            }
+        );
+    }
+
+    _cancelFlyWatchdog() {
+        if (!this._flyWatchdogId) return;
+        GLib.source_remove(this._flyWatchdogId);
+        this._flyWatchdogId = 0;
+    }
+
+    /**
+     * Camada onde os fantasmas voam: filha do uiGroup, do tamanho da tela
+     * inteira, SEMPRE acima do overlay e SEMPRE fora do pick.
+     *
+     * Fora do actor do launcher de propósito — ele é um BoxLayout
+     * vertical, onde um filho posicionado à mão viraria mais uma faixa da
+     * pilha, e o viewport, que é o outro candidato, tem
+     * clip_to_allocation: um ícone indo para outra linha sairia cortado.
+     *
+     * `reactive: false` NÃO basta para tirá-la do caminho. O dnd não acha
+     * o alvo de drop por evento: ele chama
+     * `get_actor_at_pos(PickMode.ALL, …)` e sobe a árvore procurando um
+     * `_delegate`. PickMode.ALL enxerga actor não-reactive — é justamente
+     * o que faz uma célula vazia da grade poder receber um drop. Uma
+     * camada do tamanho da tela no topo do uiGroup é, para esse pick, uma
+     * parede: o pick para nela, o pai dela é o uiGroup (que não tem
+     * `_delegate` nenhum), e a grade inteira fica inerte — nem
+     * `handleDragOver`, nem `acceptDrop`.
+     *
+     * E a parede só sobe no PRIMEIRO voo, que é o que dava a esse bug a
+     * cara de "a primeira vez ordena, a segunda não": a camada nasce
+     * DEPOIS do pick do primeiro drop (ele funciona), e a partir dali
+     * come todos os outros. Reabrir o launcher "consertava" porque
+     * `open()` joga o overlay de volta para o topo do uiGroup — por cima
+     * da camada — comprando exatamente mais um drop.
+     */
+    _ensureGhostLayer() {
+        if (!this._actor) return null;
+        if (!this._ghostLayer) {
+            this._ghostLayer = new St.Widget({ reactive: false });
+            Shell.util_set_hidden_from_pick(this._ghostLayer, true);
+            Main.layoutManager.uiGroup.add_child(this._ghostLayer);
+        }
+        // Posição e tamanho explícitos, como o escudo: o uiGroup é de
+        // layout fixo, e uma camada sem geometria própria teria a
+        // alocação decidida pelos filhos — justamente o que a conta de
+        // coordenadas do voo não pode ter se mexendo por baixo dela.
+        this._ghostLayer.set_position(0, 0);
+        this._ghostLayer.set_size(
+            global.screen_width || global.stage.width,
+            global.screen_height || global.stage.height);
+        // A cada voo, e não só na criação: o overlay se joga para o topo do
+        // uiGroup a cada abertura (e o painel de pasta também é filho de
+        // lá), então a posição relativa não se mantém sozinha.
+        this._ghostLayer
+            .get_parent()
+            ?.set_child_above_sibling(this._ghostLayer, null);
+        return this._ghostLayer;
+    }
+
+    _clearGhosts() {
+        // O contador zera aqui, e não no onComplete de cada voo: uma
+        // transição REMOVIDA não é uma transição terminada — o
+        // 'stopped' dela chega com finished=false e o onComplete não roda.
+        // Sem este zero a grade ficaria represada para sempre.
+        this._flying = 0;
+        this._cancelFlyWatchdog();
+        this._refreshPending = false;
+        for (const ghost of this._ghosts) {
+            try {
+                ghost.remove_all_transitions();
+                ghost.destroy();
+            } catch (e) {
+                logError(e, '[ArcDock] launcher ghost cleanup failed');
+            }
+        }
+        this._ghosts = [];
+    }
+
+    /**
+     * Traz de volta o ícone que ficou escondido por causa de um voo que
+     * não terminou em remontagem (o drop que não mudou nada).
+     */
+    _restoreFlySource() {
+        const icon = this._flySource;
+        this._flySource = null;
+        try {
+            icon?.show();
+        } catch (_) {}
+    }
+
+    /**
+     * Virar a página segurando o ícone junto à borda do viewport.
+     *
+     * Com dwell, e não na hora: a borda é justamente por onde o ponteiro
+     * passa para alcançar a última coluna, e um giro imediato tornaria
+     * impossível soltar um ícone ali.
+     */
+    _maybePageFlip(x) {
+        const width = this._metrics?.viewportWidth ?? 0;
+        let target = -1;
+        if (x < PAGE_FLIP_EDGE) target = this._page - 1;
+        else if (x > width - PAGE_FLIP_EDGE) target = this._page + 1;
+        if (target < 0 || target >= this._pages.length) target = -1;
+        if (target === this._pageFlipTarget) return;
+
+        this._cancelPageFlip();
+        this._pageFlipTarget = target;
+        if (target === -1) return;
+        this._pageFlipId = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT,
+            PAGE_FLIP_MS,
+            () => {
+                this._pageFlipId = 0;
+                this._pageFlipTarget = -1;
+                this._goToPage(target);
+                return GLib.SOURCE_REMOVE;
+            }
+        );
+    }
+
+    _cancelPageFlip() {
+        if (this._pageFlipId) {
+            GLib.source_remove(this._pageFlipId);
+            this._pageFlipId = 0;
+        }
+        this._pageFlipTarget = -1;
+    }
+
+    // --- Painel da pasta ---
+
+    /**
+     * O painel é recriado quando a geometria da célula muda (troca de
+     * monitor, outra contagem de colunas) e reaproveitado no resto do
+     * tempo: ele monta as próprias células, e reconstruí-lo a cada
+     * abertura de pasta seria refazer texturas à toa.
+     */
+    _ensurePopup() {
+        const m = this._metrics;
+        if (!m) return null;
+        const key = `${m.cellWidth}x${m.cellHeight}x${this._columns}`;
+        if (this._folderPopup && this._popupKey === key) return this._folderPopup;
+
+        this._folderPopup?.destroy();
+        this._popupKey = key;
+        this._folderPopup = new FolderPopup({
+            // A pasta de origem das células vem do PRÓPRIO painel, e não
+            // de _openFolderId: abrir a pasta B com a A aberta é um
+            // fecho seguido de uma abertura, e o onClosed do fecho zera
+            // aquele campo no meio da montagem da grade da pasta B. O
+            // painel já sabe qual pasta está desenhando.
+            createIcon: (entry) =>
+                this._createIcon(
+                    entry,
+                    m.labelWidth,
+                    this._folderDnd(
+                        this._folderPopup?.folderId ?? this._openFolderId
+                    )
+                ),
+            cellWidth: m.cellWidth,
+            cellHeight: m.cellHeight,
+            // Uma pasta é um recorte pequeno da grade: manter as mesmas
+            // colunas da tela inteira deixaria uma pasta de três apps
+            // dentro de um painel largo e vazio.
+            columns: Math.max(2, Math.min(5, this._columns)),
+            theme: this._theme,
+            onRename: (folderId, name) => this._renameFolder(folderId, name),
+            onClosed: () => {
+                this._openFolderId = null;
+            },
+        });
+        return this._folderPopup;
+    }
+
+    _openFolder(item, icon) {
+        if (!icon || !this._metrics) return;
+        // Antes do _ensurePopup(): a fábrica de células lê este campo para
+        // saber de qual pasta os ícones que ela cria estão saindo.
+        this._openFolderId = item.folderId ?? item.id;
+        const popup = this._ensurePopup();
+        if (!popup) return;
+        popup.open(item, icon.getArtRect(), this._metrics.bounds);
+    }
+
+    _closeFolder(animate = true) {
+        if (this._folderPopup?.isOpen) this._folderPopup.close(animate);
+    }
+
+    _renameFolder(folderId, name) {
+        if (!this._layout.renameFolder(folderId, name)) return;
+        // Só o rótulo, sem remontar a grade: a remontagem destruiria a
+        // célula que o painel aberto está usando de âncora, e o nome é a
+        // única coisa que mudou.
+        this._iconById(folderId)?.setLabelText(name);
+        const entry = this._entries.find(item => item?.id === folderId);
+        if (entry) entry.name = name;
+    }
+
     // --- Eventos ---
 
     _onSearchChanged() {
         if (this._suppressSearchEcho || !this._search) return;
         const query = this._search.get_text() ?? '';
-        this._filtered = filterApps(this._apps, query);
+        // Uma busca em curso é outro modo de exibição, não um estado
+        // compatível com um painel de pasta aberto por cima da grade.
+        this._closeFolder(false);
+        // Sem busca a grade é a ordem do usuário, com pastas. Com busca é
+        // a lista PLANA de apps por relevância — inclusive os que moram
+        // dentro de pastas, que é o comportamento do Launchpad: procurar
+        // um app nunca deveria exigir lembrar em que pasta ele foi parar.
+        this._filtered = query.trim()
+            ? filterApps(this._apps, query).map(app => this._entryForApp(app))
+            : this._entries;
         // Reconstrói a paginação inteira e volta para a primeira página: o
         // resultado é outra lista, e manter o índice de página anterior
         // deixaria o usuário olhando para uma página vazia.
@@ -1066,16 +2389,22 @@ export class AppsLauncher {
     }
 
     _onButtonRelease(actor, event) {
-        // Só o pixel "vazio" do overlay fecha. Um clique numa célula ou no
-        // campo de busca nasce no filho reactive e nunca chega aqui como
-        // source próprio; os containers intermediários são não-reactive de
-        // propósito, então o fundo inteiro é este actor.
+        // O pixel vazio do overlay CONSOME o clique, mas não fecha mais a
+        // grade.
+        //
+        // Fechar aqui transformava o fim de um arraste em fechamento: um
+        // ícone solto no vão entre duas células termina exatamente com um
+        // button-release sobre o fundo do overlay. A grade sai da tela por
+        // três caminhos, e só por eles: abrir um app, Escape, ou o botão
+        // Applications da dock.
         if (event.get_source?.() !== actor) return Clutter.EVENT_PROPAGATE;
-        this.close();
         return Clutter.EVENT_STOP;
     }
 
     _onScroll(event) {
+        // Paginar com uma pasta aberta moveria a âncora do painel para
+        // fora da tela; o gesto fecha a pasta e volta para a grade.
+        this._closeFolder();
         const direction = event.get_scroll_direction();
         if (direction === Clutter.ScrollDirection.SMOOTH) {
             const [dx, dy] = event.get_scroll_delta();
@@ -1104,6 +2433,21 @@ export class AppsLauncher {
      *   sabe inserir caracteres sozinho) e não da raiz do overlay.
      */
     _onKeyPress(event, fromSearch) {
+        // O nome da pasta está sendo editado: as teclas são dele. Sem esta
+        // saída, o desvio "qualquer caractere volta para a busca" roubaria
+        // a digitação no meio da palavra.
+        if (this._folderPopup?.isEditingName) return Clutter.EVENT_PROPAGATE;
+        // Menu de contexto aberto: as teclas são DELE, pela mesma razão.
+        //
+        // O Escape do menu nem chega aqui — o PopupMenuManager o consome na
+        // fase de CAPTURA sobre o actor do menu, e por isso este handler
+        // (que é de bolha, no uiGroup) nunca o vê. As outras teclas chegam:
+        // o actor do menu é filho do uiGroup, então tudo que ele não
+        // consome sobe até nós. Sem esta saída, a primeira letra digitada
+        // com o menu aberto cairia no desvio "volta para a busca", que faz
+        // `grab_key_focus()` no campo — arrancando o foco do menu e
+        // deixando-o aberto sem teclado.
+        if (this._isMenuOpen()) return Clutter.EVENT_PROPAGATE;
         const symbol = event.get_key_symbol();
         const modifiers =
             event.get_state() &
@@ -1114,8 +2458,10 @@ export class AppsLauncher {
         switch (symbol) {
         case Clutter.KEY_Escape:
             // Comportamento do Launchpad: o primeiro Escape limpa a busca,
-            // o segundo é que fecha.
-            if (this._search?.get_text()) this._search.set_text('');
+            // o segundo é que fecha. Uma pasta aberta vem antes dos dois —
+            // é a camada mais de cima.
+            if (this._folderPopup?.isOpen) this._closeFolder();
+            else if (this._search?.get_text()) this._search.set_text('');
             else this.close();
             return Clutter.EVENT_STOP;
 
@@ -1148,6 +2494,19 @@ export class AppsLauncher {
             return Clutter.EVENT_STOP;
         case Clutter.KEY_Page_Down:
             this._goToPage(this._page + 1);
+            return Clutter.EVENT_STOP;
+
+        // Menu de contexto pelo teclado. Passa pelo launcher e não pela
+        // célula porque as células são `can_focus: false` (o foco mora na
+        // busca do começo ao fim), então elas nunca receberiam a tecla
+        // sozinhas — a "seleção" da grade é um realce nosso, não o foco.
+        case Clutter.KEY_Menu:
+            this._openSelectionMenu();
+            return Clutter.EVENT_STOP;
+        case Clutter.KEY_F10:
+            if (!(event.get_state() & Clutter.ModifierType.SHIFT_MASK))
+                break;
+            this._openSelectionMenu();
             return Clutter.EVENT_STOP;
         }
 
@@ -1185,6 +2544,19 @@ export class AppsLauncher {
 
     _activateSelection() {
         if (this._selection < 0) return;
-        this._launch(this._filtered[this._selection] ?? null);
+        const item = this._filtered[this._selection] ?? null;
+        this._activate(item, this._icons[this._selection] ?? null);
+    }
+
+    _openSelectionMenu() {
+        if (this._selection < 0) return;
+        // O realce da seleção pode estar apagado (grade recém-aberta, sem
+        // busca nem navegação): abrir um menu sobre uma célula que o usuário
+        // não vê selecionada seria um menu vindo do nada.
+        if (!this._selectionVisible) {
+            this._selectionVisible = true;
+            this._setSelection(this._selection, false);
+        }
+        this._icons[this._selection]?.toggleMenu();
     }
 }

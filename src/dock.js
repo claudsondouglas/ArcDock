@@ -26,6 +26,9 @@ import { ShowAppsIcon } from "./showAppsIcon.js";
 import { OverviewDashHider } from "./overviewDashHider.js";
 import { AutoHide } from "./autoHide.js";
 import { Magnification } from "./magnification.js";
+import { DockSlotOverlay, SlotPaint } from "./dockSlotOverlay.js";
+import { DockDragReflow } from "./dockDragReflow.js";
+import { DockGhostFlight } from "./dockGhostFlight.js";
 import { InputCatcher } from "./inputCatcher.js";
 import { WindowAnimations } from "./windowAnimations.js";
 import { FullscreenWatcher } from "./fullscreenWatcher.js";
@@ -172,8 +175,9 @@ export class Dock {
     });
     // O tema escuro é só uma classe A MAIS no painel: o CSS do claro
     // continua valendo e o escuro entra como override, inclusive para os
-    // filhos (dots, barra, badge, indicador de drop) via seletor
-    // descendente. Ver stylesheet.css.
+    // filhos (dots, barra, badge) via seletor descendente. Ver
+    // stylesheet.css. Quem NÃO é filho do painel — o tooltip e a casa
+    // reservada do arraste — recebe a classe do tema na criação.
     if (this._theme === DockTheme.DARK)
       this._panel.add_style_class_name("arcdock-panel-dark");
     // O tooltip é adicionado ao uiGroup, não ao painel — nenhum seletor
@@ -249,6 +253,30 @@ export class Dock {
     this._foldersBox._delegate = this._dropDelegate(this._foldersBox);
     this._panel.add_child(this._foldersBox);
 
+    // Maquinário do arraste, no mesmo modelo da grade de apps: a casa
+    // reservada acesa, os vizinhos abrindo espaço por translação e o
+    // fantasma voando até a casa antes de a fila ser refeita. Ver
+    // _beginDrag() e os três módulos.
+    //
+    // O overlay é adicionado ao glassHost DEPOIS do painel de propósito —
+    // ver dockSlotOverlay.js: o constraint que o gruda na caixa da seção
+    // lê a alocação dela no momento em que a camada é alocada, e filhos
+    // são alocados na ordem da árvore.
+    this._slotOverlay = new DockSlotOverlay(glassHost, {
+      iconSize: this._size.ICON,
+      theme: this._theme,
+    });
+    this._reflow = new DockDragReflow();
+    this._ghostFlight = new DockGhostFlight();
+    // Sessão de arraste em curso (null quando não há nenhuma) e o ícone
+    // que está no ar. O ícone é guardado à parte porque ele sobrevive à
+    // sessão: entre o drop e o pouso do fantasma ele continua escondido, e
+    // é _applyOrder() quem precisa saber disso para não devolvê-lo à vista
+    // cedo demais.
+    this._drag = null;
+    this._dragSource = null;
+    this._dragMonitor = null;
+
     // Criado ANTES do ShowAppsIcon porque é o botão quem recebe a ação:
     // sem o launcher em mãos não dá para decidir se o clique abre a
     // grade ou cai no overview. Isso o coloca antes de this._autoHide,
@@ -277,6 +305,12 @@ export class Dock {
             // Altura que a dock ocupa na borda de baixo, para o launcher
             // não desenhar a última linha de ícones debaixo dela.
             dockInset: () => this._launcherDockInset(),
+            // O menu de contexto da grade fixa/desafixa pela NOSSA store.
+            // Dois callbacks e não o DockItemsStore em si: uma segunda
+            // instância gravaria `dock-items` em paralelo e brigaria com a
+            // supressão do eco das próprias escritas (ver _persistOrder).
+            isAppPinned: (appId) => this._isAppPinned(appId),
+            onTogglePinned: (appId) => this._toggleAppPinnedById(appId),
           })
         : null;
 
@@ -400,7 +434,6 @@ export class Dock {
     const safe = (fn) => { try { fn(); } catch (_) {} };
 
     safe(() => Cursor.setDefault());
-    safe(() => this._hideDropIndicator());
     // PRIMEIRO de todos, e a dock é destruída e recriada o tempo todo
     // (qualquer preferência, monitors-changed, wake, a série de reparo)
     // — inclusive com a grade ABERTA na tela, o que aqui é rotina e não
@@ -412,6 +445,21 @@ export class Dock {
     // inteira por baixo.
     safe(() => this._appsLauncher?.destroy());
     this._appsLauncher = null;
+    // Antes dos ícones, e antes da magnificação: o reflow desfaz uma
+    // translação em cada um deles (e depois de destruídos não haveria em
+    // quem desfazer), e o monitor de arraste é um recurso GLOBAL do Shell —
+    // deixá-lo para trás faria o dnd do próximo arraste chamar um callback
+    // sobre uma dock morta. O voo em curso é abandonado: a dock está indo
+    // embora, e a ordem antiga continua no store.
+    safe(() => this._removeDragMonitor());
+    safe(() => this._ghostFlight?.destroy());
+    this._ghostFlight = null;
+    safe(() => this._reflow?.destroy());
+    this._reflow = null;
+    safe(() => this._slotOverlay?.destroy());
+    this._slotOverlay = null;
+    this._drag = null;
+    this._dragSource = null;
     safe(() => this._autoHide?.destroy());
     this._autoHide = null;
     // Antes dos ícones: enquanto o patch do predicado de animação estiver
@@ -726,9 +774,9 @@ export class Dock {
   }
 
   // Vale para qualquer IconButton (app ou pasta): sem isso o hover
-  // continuaria ativo durante o arrasto e o indicador de drop ficaria
-  // órfão no fim dele. O clique é conectado aqui pelo mesmo motivo de
-  // ser um só lugar para as duas seções (principal e recentes).
+  // continuaria ativo durante o arrasto e a casa acesa ficaria órfã no fim
+  // dele. O clique é conectado aqui pelo mesmo motivo de ser um só lugar
+  // para as duas seções (principal e recentes).
   _connectIcon(icon) {
     // Clique que ATIVA (esquerdo ou meio; o direito abre menu e nem chega
     // a emitir 'clicked') fecha a grade, como no macOS: o app vem para a
@@ -736,17 +784,22 @@ export class Dock {
     // interno do IconButton, então roda com a ativação já feita — quem
     // devolve o teclado para a janela é o popModal do close().
     this._signals.connect(icon, "clicked", () => this._appsLauncher?.close());
+    // Os três handlers são blindados: o emit do _Draggable percorre os
+    // handlers num laço JS sem try/catch, e uma exceção nossa aborta o
+    // resto do fim de gesto — inclusive o _dragComplete(), que é quem
+    // devolve o grab modal. Ver _dndGuard().
     this._signals.connect(icon._draggable, "drag-begin", () =>
-      this._suppressHover(),
+      this._dndGuard(() => {
+        // ANTES do _beginDrag: ele mede a largura NATURAL dos botões, e a
+        // magnificação só a devolve quando setEnabled(false) desfaz as
+        // larguras que ela tinha fixado.
+        this._suppressHover();
+        this._beginDrag(icon);
+      }, "drag begin"),
     );
-    this._signals.connect(icon._draggable, "drag-end", () => {
-      this._hideDropIndicator();
-      this._resumeHover();
-    });
-    this._signals.connect(icon._draggable, "drag-cancelled", () => {
-      this._hideDropIndicator();
-      this._resumeHover();
-    });
+    const end = () => this._dndGuard(() => this._endDrag(), "drag end");
+    this._signals.connect(icon._draggable, "drag-end", end);
+    this._signals.connect(icon._draggable, "drag-cancelled", end);
   }
 
   _removeItem(id) {
@@ -800,9 +853,8 @@ export class Dock {
    * geometria de repouso a partir dessa ordem.
    *
    * Lido dos children das caixas (e não de _iconOrder) porque é a ordem
-   * que está de fato na tela: cobre o indicador de drop, os recentes e
-   * qualquer ícone criado no meio de um _refresh(). O separador fica de
-   * fora: só ícone incha.
+   * que está de fato na tela: cobre os recentes e qualquer ícone criado no
+   * meio de um _refresh(). O separador fica de fora: só ícone incha.
    */
   _magnifiableIcons() {
     const icons = [];
@@ -815,10 +867,27 @@ export class Dock {
   }
 
   _togglePinned(app) {
-    const appId = app.get_id();
+    this._toggleAppPinnedById(app?.get_id?.());
+  }
+
+  /**
+   * Fixa/desafixa pelo desktop id.
+   *
+   * Separado de _togglePinned porque o menu de contexto da grade de apps
+   * tem em mãos o id, não o Shell.App — e o launcher não pode ter um
+   * DockItemsStore próprio: uma segunda instância gravaria `dock-items` em
+   * paralelo e brigaria com a supressão que _persistOrder faz do eco das
+   * próprias escritas.
+   */
+  _toggleAppPinnedById(appId) {
     if (!appId) return;
-    this._items?.toggle(makeId(ItemType.APP, appId));
+    this._items?.toggle(this._appIconId(appId));
     this._refresh();
+  }
+
+  /** O app está fixado agora? Lido a cada abertura do menu do launcher. */
+  _isAppPinned(appId) {
+    return !!appId && this._items?.has(this._appIconId(appId)) === true;
   }
 
   _appIconId(appId) {
@@ -933,9 +1002,20 @@ export class Dock {
       } else {
         box.set_child_at_index(icon, idx);
       }
+      // O ícone que está no ar é a exceção: ele continua na fila (é o
+      // buraco que segura o reflow), mas invisível. Um _refresh() no meio
+      // do gesto — um app que abriu, uma preferência que mudou — passaria
+      // por aqui e o traria de volta à vista, pondo o mesmo ícone em dois
+      // lugares ao mesmo tempo.
+      if (icon === this._dragSource) continue;
       icon.show();
       icon.opacity = 255;
     }
+    // Este _applyOrder mexeu na ordem dos children debaixo de um arraste em
+    // curso: os índices que a sessão guardou (a casa de origem, quem se
+    // deslocou) descrevem uma fila que já não existe. Marcada como velha, a
+    // sessão é refeita no próximo handleDragOver a partir da fila atual.
+    if (this._drag) this._drag.stale = true;
   }
 
   // A seção onde um id mora, decidida pelo TIPO do id e não pela classe
@@ -958,24 +1038,123 @@ export class Dock {
   _dropDelegate(box) {
     return {
       handleDragOver: (source, _actor, x) =>
-        this._handleDragOver(box, source, x),
-      acceptDrop: (source, _actor, x) => this._acceptDrop(box, source, x),
+        this._dndGuard(
+          () => this._handleDragOver(box, source, x),
+          "drag over",
+          DND.DragMotionResult.NO_DROP,
+        ),
+      acceptDrop: (source, actor, x) =>
+        this._dndGuard(
+          () => this._acceptDrop(box, source, actor, x),
+          "accept drop",
+          false,
+        ),
     };
   }
 
+  /**
+   * Uma casa acesa, e é a reservada.
+   *
+   * Com o reflow os vizinhos fecham o buraco da origem no mesmo movimento,
+   * então o único vazio de verdade na tela é a casa onde o ícone vai cair —
+   * duas casas acesas anunciariam dois lugares livres, e um deles seria
+   * mentira. Tanto o reflow quanto o overlay saem cedo quando a casa não
+   * mudou: este caminho roda a cada evento de movimento, e reiniciar as
+   * mesmas transições por quadro as deixaria presas no primeiro instante do
+   * ease, sem nunca chegar.
+   */
   _handleDragOver(box, source, x) {
-    if (!this._acceptsDrop(box, source)) return DND.DragMotionResult.NO_DROP;
-    this._showDropIndicator(box);
-    this._moveDropIndicator(this._dropIndexAt(box, x));
+    const session = this._dragSession(box, source);
+    if (!session) return DND.DragMotionResult.NO_DROP;
+    const index = this._dropIndexAt(session, x);
+    session.reserved = index;
+    this._reflow.reserve(index);
+    this._slotOverlay.moveTo(
+      this._cellArtRect(session, index),
+      SlotPaint.TARGET,
+    );
     return DND.DragMotionResult.MOVE_DROP;
   }
 
-  _acceptDrop(box, source, x) {
-    if (!this._acceptsDrop(box, source)) return false;
-    const targetIndex = this._dropIndexAt(box, x);
-    this._hideDropIndicator();
-    this._reorder(source.id, targetIndex, box);
+  /**
+   * O ícone é solto: ele voa até a casa reservada e SÓ ENTÃO a fila é
+   * refeita.
+   *
+   * O actor que o dnd entrega é adotado pelo voo (o dnd o destruiria no
+   * mesmo quadro, ver dockGhostFlight.js), e a reordenação vira o callback
+   * de pouso — é essa emenda que faz o ícone de verdade aparecer no quadro
+   * em que o fantasma chega.
+   */
+  _acceptDrop(box, source, dragActor, x) {
+    const session = this._dragSession(box, source);
+    if (!session) return false;
+    const index = this._dropIndexAt(session, x);
+    // A reserva é reafirmada AQUI: um drop pode chegar sem nenhum
+    // handleDragOver antes dele (o ponteiro parado em cima da casa desde o
+    // início do gesto), e o fantasma tem de mirar a casa que os vizinhos
+    // realmente abriram.
+    session.reserved = index;
+    this._reflow.reserve(index);
+    this._slotOverlay.moveTo(
+      this._cellArtRect(session, index),
+      SlotPaint.TARGET,
+    );
+
+    const sourceId = source.id;
+    const rect = this._cellStageRect(session, index);
+    this._ghostFlight.fly(dragActor, rect, {
+      onLanded: () => this._finishDrop(sourceId, index, box),
+    });
+    // true mesmo quando nada mudou: soltar no mesmo lugar é um drop
+    // TRATADO, e devolver false faria o dnd levar a arte de volta à origem
+    // como se o gesto tivesse falhado.
     return true;
+  }
+
+  /**
+   * O fantasma pousou: a nova ordem entra em vigor.
+   *
+   * As translações são zeradas SEM animar logo depois do _applyOrder(): a
+   * alocação nova põe cada ícone exatamente no pixel em que a translação o
+   * estava desenhando, então o zero é invisível — enquanto animá-lo seria
+   * ver a fila voltar e ir de novo.
+   */
+  _finishDrop(sourceId, index, box) {
+    // ANTES de soltar a referência: _applyOrder() devolve opacidade e
+    // visibilidade, mas não sabe do pick — e _hideDragSource() tirou o
+    // ícone dele para o voo. Sem este desfazer o ícone volta à vista
+    // permanentemente inerte: sem clique, sem hover, sem menu.
+    this._showDragSource();
+    this._dragSource = null;
+    this._reorder(sourceId, index, box);
+    this._clearDragDecor(false);
+    this._resumeHover();
+    // Geometria de ícone: o único ponto de sincronia é o fim do
+    // _reposition(), e uma reordenação move ícones sem passar por
+    // _refresh() — sem isto as janelas minimizariam para a posição antiga
+    // até o próximo refresh.
+    this._reposition();
+  }
+
+  /**
+   * Qual CASA da seção está sob um ponto da fila.
+   *
+   * Piso e não arredondamento: o que se procura não é a fronteira entre
+   * dois ícones, é a célula inteira — o alvo do arraste é a casa, e ela
+   * ocupa toda a largura da coluna. O índice devolvido já é a posição FINAL
+   * na ordem visível da seção (a mesma coordenada que _reorder() espera),
+   * porque os vizinhos entre a origem e a casa andam justamente uma casa
+   * para o lado contrário.
+   *
+   * O teto é `icons.length - 1`, contando o próprio ícone no ar: ele
+   * continua ocupando um lugar na fila, e a última casa é a que o põe no
+   * fim da seção.
+   */
+  _dropIndexAt(session, x) {
+    const last = Math.max(0, session.icons.length - 1);
+    const cell = Math.floor((x - session.originX) / session.pitch);
+    if (!Number.isFinite(cell)) return session.from;
+    return Math.max(0, Math.min(last, cell));
   }
 
   /**
@@ -995,19 +1174,19 @@ export class Dock {
    * O teste de _iconOrder cobre os recentes. Um IconButton é arrastável
    * por construção (o próprio _init chama makeDraggable e não oferece
    * como desligar), então quem tem de recusar é o alvo do drop: sem isso
-   * arrastar um recente desenharia o indicador prometendo uma posição na
-   * caixa principal que _reorder() ignoraria — o id nunca está em
-   * _iconOrder. NO_DROP dá o cursor certo e devolve o ícone ao lugar.
+   * arrastar um recente acenderia uma casa prometendo uma posição na caixa
+   * principal que _reorder() ignoraria — o id nunca está em _iconOrder.
+   * NO_DROP dá o cursor certo e devolve o ícone ao lugar.
    */
   _isReorderable(source) {
     return source instanceof IconButton && this._iconOrder.includes(source.id);
   }
 
   _suppressHover() {
-    // A magnificação sai de cena junto com o hover: durante o arrasto os
-    // ícones precisam estar na largura natural, que é a base de
-    // _dropIndexAt(), e um painel que se remexe sob o cursor tornaria o
-    // alvo do drop imprevisível.
+    // A magnificação sai de cena junto com o hover: a aritmética das
+    // casas (largura da casa, origem da fila, deslocamento dos vizinhos)
+    // toda assume largura NATURAL, e um painel que se remexe sob o cursor
+    // tornaria o alvo do drop imprevisível.
     this._magnification?.setEnabled(false);
     for (const a of this._hoverTargets()) {
       resetHoverPress(a);
@@ -1027,58 +1206,263 @@ export class Dock {
     return targets;
   }
 
-  _showDropIndicator(box) {
-    if (this._dropIndicator?.get_parent() === box) return;
-    // Trocou de caixa no meio do arrasto: o indicador é recriado no lugar
-    // certo em vez de reparentado, para não deixar rastro na caixa antiga.
-    this._hideDropIndicator();
-    // y_expand:false + y_align:CENTER impede que o BoxLayout estique o
-    // indicador para a altura total do ícone (que inclui o espaço do
-    // running dot abaixo), mantendo-o como um quadrado perfeito.
-    this._dropIndicator = new St.Widget({
-      style_class: "arcdock-drop-indicator",
-      width: this._size.ICON,
-      height: this._size.ICON,
-      y_expand: false,
-      y_align: Clutter.ActorAlign.START,
-    });
-    box.add_child(this._dropIndicator);
-  }
-
-  _hideDropIndicator() {
-    this._dropIndicator?.destroy();
-    this._dropIndicator = null;
-  }
-
-  _moveDropIndicator(visualIndex) {
-    const box = this._dropIndicator?.get_parent();
-    if (!box) return;
-    // Converte índice visual (só ícones visíveis) em índice absoluto de children.
-    const children = box.get_children()
-      .filter(c => c !== this._dropIndicator);
-    let visCount = 0;
-    for (let i = 0; i < children.length; i++) {
-      if (!children[i].visible) continue;
-      if (visCount === visualIndex) {
-        box.set_child_at_index(this._dropIndicator, i);
-        return;
-      }
-      visCount++;
+  /**
+   * Roda `fn` sem deixar NADA escapar para o dnd do Shell.
+   *
+   * Mesma razão do _guard do AppGridIcon: o `_Draggable` é um
+   * `Signals.EventEmitter` cujo `emit()` percorre os handlers num laço JS
+   * **sem try/catch**. 'drag-begin' sai de dentro do `_gestureRecognized()`
+   * e 'drag-end' de dentro do `_dragActorDropped()`; uma exceção nossa
+   * sobe por esse emit e aborta o resto do fim de gesto — inclusive o
+   * `_dragComplete()`, que é quem devolve o `Main.pushModal` empurrado no
+   * início do arraste. O sintoma não é um gesto perdido, é o dnd da SESSÃO
+   * inteira travado: o grab fica de pé para sempre e nenhum arraste novo
+   * começa. O try/catch que o dnd tem cobre só a chamada do acceptDrop.
+   */
+  _dndGuard(fn, what, fallback = undefined) {
+    try {
+      return fn();
+    } catch (e) {
+      logError(e, `[ArcDock] dock ${what} failed`);
+      return fallback;
     }
-    box.set_child_at_index(this._dropIndicator, children.length);
   }
 
-  // Índice DENTRO da seção `box` — não é índice de _iconOrder.
-  _dropIndexAt(box, x) {
-    let idx = 0;
-    for (const child of box.get_children()) {
-      if (child === this._dropIndicator) continue;
-      if (!child.visible) continue; // ignora source (hidden durante drag)
-      const center = child.x + child.width / 2;
-      if (x < center) return idx;
-      idx++;
+  /**
+   * Começa (ou refaz) a sessão de arraste: o buraco na fila, a casa acesa
+   * e a aritmética das casas.
+   *
+   * A geometria é medida em larguras NATURAIS e não em alocação. No
+   * primeiro instante do gesto a magnificação acabou de ser desligada por
+   * _suppressHover(), e um set_width(-1) só aparece na alocação depois do
+   * próximo ciclo de layout — ler `child.x` aqui devolveria a fila ainda
+   * inchada. `get_preferred_width(-1)` já vem da largura de repouso, e a
+   * origem da fila (`icons[0].x`) é o único número que a magnificação não
+   * mexe: o primeiro ícone da caixa está sempre encostado na borda dela.
+   *
+   * @returns {boolean} sessão de pé
+   */
+  _beginDrag(icon) {
+    this._drag = null;
+    this._dragSource = icon;
+    if (!this._isReorderable(icon)) return false;
+
+    const box = this._boxForId(icon.id);
+    const icons = this._sectionIcons(box);
+    const from = icons.indexOf(icon);
+    if (from === -1) return false;
+
+    const [, pitch] = icons[0].get_preferred_width(-1);
+    const [, cellHeight] = icons[0].get_preferred_height(-1);
+    if (!(pitch > 0) || !(cellHeight > 0)) return false;
+
+    this._drag = {
+      icon,
+      box,
+      icons,
+      from,
+      pitch,
+      cellHeight,
+      artTop: this._cellArtTop(icons[0], cellHeight),
+      originX: icons[0].x,
+      originY: icons[0].y,
+      // A casa RESERVADA nasce sendo a de origem: neste primeiro instante
+      // nada se moveu, e é para ali que o ícone volta se o gesto acabar
+      // sem sair do lugar. Do primeiro handleDragOver em diante a reserva
+      // passa a ser a casa sob o ponteiro.
+      reserved: from,
+      stale: false,
+    };
+    this._reflow.begin(icons, from, pitch);
+    this._slotOverlay.attachTo(box);
+    this._slotOverlay.moveTo(this._cellArtRect(this._drag, from), SlotPaint.EMPTY);
+    this._addDragMonitor();
+    return true;
+  }
+
+  /**
+   * Fim do gesto (drop aceito, recusado ou cancelado).
+   *
+   * Com um fantasma no ar quase nada é desfeito: o ícone de origem VOLTA a
+   * se esconder (o IconButton já se mostrou de novo, que é o que ele faz no
+   * fim de todo gesto) e o REFLOW fica de pé, porque o fantasma pousa
+   * exatamente na casa que os vizinhos abriram — zerar as translações agora
+   * faria a fila saltar para trás e, um instante depois, para a frente
+   * outra vez. Quem desfaz tudo isso é o pouso (_finishDrop).
+   *
+   * O hover/magnificação também esperam o pouso: religá-los aqui poria o
+   * painel a inchar sob o ponteiro enquanto o fantasma ainda mira uma casa
+   * medida em larguras de repouso.
+   */
+  _endDrag() {
+    this._drag = null;
+    this._removeDragMonitor();
+    if (this._ghostFlight?.flying) {
+      this._hideDragSource();
+      return;
     }
-    return idx;
+    this._clearDragDecor();
+    this._dragSource = null;
+    this._resumeHover();
+  }
+
+  /** Apaga a casa acesa e devolve os vizinhos ao lugar. */
+  _clearDragDecor(animate = true) {
+    this._slotOverlay?.clear(animate);
+    this._reflow?.cancel(animate);
+  }
+
+  /**
+   * Esconde de novo o ícone que está no ar.
+   *
+   * O IconButton acabou de se mostrar (é o que ele faz no fim de TODO
+   * gesto, inclusive num drop aceito), e deixá-lo aceso poria o mesmo
+   * ícone em dois lugares enquanto o fantasma atravessa o painel.
+   */
+  _hideDragSource() {
+    const icon = this._dragSource;
+    if (!icon) return;
+    try {
+      Shell.util_set_hidden_from_pick(icon, true);
+      icon.opacity = 0;
+    } catch (_) {}
+  }
+
+  _showDragSource() {
+    const icon = this._dragSource;
+    if (!icon) return;
+    try {
+      Shell.util_set_hidden_from_pick(icon, false);
+      icon.opacity = 255;
+      icon.show();
+    } catch (_) {}
+  }
+
+  /**
+   * O ponteiro saiu do painel com algo na mão.
+   *
+   * O monitor de arraste é a única forma de saber isso: handleDragOver só é
+   * chamado enquanto NÓS somos o alvo, e não existe um handleDragOut. Sem
+   * ele a fila ficaria aberta prometendo uma posição para um ícone que já
+   * está a meia tela de distância.
+   *
+   * A sessão é marcada como VELHA junto: desfazer o reflow encerra a
+   * contabilidade dele (quem era a casa de origem, quem estava deslocado), e
+   * sem a marca o handleDragOver da volta encontraria uma sessão que se diz
+   * boa sobre um reflow que já não sabe de onde partir — a fila nunca mais
+   * se abriria no resto do gesto.
+   */
+  _addDragMonitor() {
+    if (this._dragMonitor) return;
+    this._dragMonitor = {
+      dragMotion: (dragEvent) => {
+        this._dndGuard(() => {
+          const target = dragEvent?.targetActor ?? null;
+          if (target && this._panel?.contains(target)) return;
+          if (!this._reflow?.active) return;
+          if (this._drag) this._drag.stale = true;
+          this._clearDragDecor();
+        }, "drag monitor");
+        return DND.DragMotionResult.CONTINUE;
+      },
+    };
+    DND.addDragMonitor(this._dragMonitor);
+  }
+
+  _removeDragMonitor() {
+    if (!this._dragMonitor) return;
+    DND.removeDragMonitor(this._dragMonitor);
+    this._dragMonitor = null;
+  }
+
+  /**
+   * A sessão vigente para este par (caixa, source), refeita quando já não
+   * descreve a fila que está na tela.
+   *
+   * `_beginDrag` é chamado no 'drag-begin', mas um _refresh() no meio do
+   * gesto (um app abriu, uma janela fechou) reordena os children e invalida
+   * os índices — e o próprio drag-begin pode nem ter estabelecido sessão
+   * nenhuma se algo explodiu antes. Revalidar aqui é o que mantém o
+   * caminho quente correto sem varrer a fila a cada evento de movimento.
+   */
+  _dragSession(box, source) {
+    if (!this._acceptsDrop(box, source)) return null;
+    const session = this._drag;
+    if (session && !session.stale && session.icon === source && session.box === box)
+      return session;
+    return this._beginDrag(source) ? this._drag : null;
+  }
+
+  /** Só os ícones da seção, na ordem visual, INCLUINDO o que está no ar. */
+  _sectionIcons(box) {
+    return (box?.get_children() ?? []).filter(
+      (child) => child instanceof IconButton,
+    );
+  }
+
+  /**
+   * Retângulo da ARTE da casa `index`, em coordenadas da CAIXA da seção —
+   * que é o mesmo espaço em que o dnd entrega o `x` do handleDragOver e o
+   * mesmo em que o overlay desenha (ele está grudado na caixa por
+   * constraint).
+   *
+   * Aritmética da largura da casa, e não `children[index].x`: as casas têm
+   * todas o mesmo tamanho, então a conta é exata — e imune ao fato de os
+   * ícones já estarem transladados pelo reflow, que é justamente o que uma
+   * leitura de posição não seria.
+   */
+  _cellArtRect(session, index) {
+    const size = this._size.ICON;
+    return {
+      x: session.originX + index * session.pitch + (session.pitch - size) / 2,
+      y: session.originY + session.artTop,
+      width: size,
+      height: size,
+    };
+  }
+
+  /**
+   * Distância do topo da CASA até o topo da ARTE, em pixels.
+   *
+   * Medida no actor, e não deduzida de `(altura da casa − ícone) / 2`: a
+   * caixa do ícone é mais alta que a arte (ela ainda carrega o indicador de
+   * app rodando embaixo), e onde a arte cai dentro dela depende de o layout
+   * fixo do St honrar ou não o `y_align` do stage. Centralizar por
+   * aritmética acerta numa hipótese e erra na outra por alguns pixels — e o
+   * erro apareceria duas vezes, na casa acesa e no ponto onde o fantasma
+   * pousa.
+   *
+   * Somando os `y` de alocação pela cadeia de pais, e não por
+   * `get_transformed_position()`: a magnificação escala o host e só devolve
+   * a escala ao fim de um ease, então no primeiro instante do gesto a
+   * posição transformada ainda vem do meio dessa volta. `y` é alocação
+   * pura, que nem a escala nem a translação do reflow mexem.
+   *
+   * Só a vertical é medida. A horizontal continua na aritmética das casas
+   * porque ali os ícones JÁ estão deslocados pelo reflow, e uma leitura de
+   * posição devolveria o lugar de onde eles saíram.
+   */
+  _cellArtTop(icon, cellHeight) {
+    const fallback = (cellHeight - this._size.ICON) / 2;
+    let node = icon?.getDragActorSource?.() ?? null;
+    let top = 0;
+    while (node && node !== icon) {
+      top += node.y;
+      node = node.get_parent();
+    }
+    // Não chegou no botão (arte trocada por uma subclasse, actor sem pai
+    // ainda): a leitura não descreve esta casa e não vale nada.
+    if (node !== icon) return fallback;
+    if (!Number.isFinite(top) || top < 0 || top > cellHeight) return fallback;
+    return top;
+  }
+
+  /** O mesmo retângulo em coordenadas de STAGE, que é onde o voo acontece. */
+  _cellStageRect(session, index) {
+    const rect = this._cellArtRect(session, index);
+    const [boxX, boxY] = session.box.get_transformed_position();
+    if (!Number.isFinite(boxX) || !Number.isFinite(boxY)) return null;
+    return { ...rect, x: boxX + rect.x, y: boxY + rect.y };
   }
 
   /**
@@ -1092,8 +1476,8 @@ export class Dock {
     const fromIndex = this._iconOrder.indexOf(sourceId);
     if (fromIndex === -1) return;
     this._iconOrder.splice(fromIndex, 1);
-    // Depois do splice, como o próprio targetIndex: o ícone arrastado
-    // está escondido e _dropIndexAt() não o conta.
+    // Depois do splice, como o próprio targetIndex: ele é a posição FINAL
+    // na ordem visível da seção, já sem o item que se moveu.
     const sectionIds = this._iconOrder.filter(
       (id) => this._boxForId(id) === box,
     );
@@ -1227,8 +1611,10 @@ export class Dock {
     const icon = this._icons.get(id) ?? this._recentIcons.get(id);
     // `visible` e não `mapped`: com a dock escondida pelo auto-hide o
     // ícone está desmapeado, mas continua sendo o alvo certo. O que
-    // precisa recusar é o ícone escondido pelo próprio drag.
-    if (!icon?.visible) return null;
+    // precisa recusar é o ícone escondido pelo próprio drag — e ele
+    // continua `visible`, porque o arraste o apaga por OPACIDADE para não
+    // perder o lugar na fila (ver IconButton._onDragBegin).
+    if (!icon?.visible || !icon.opacity) return null;
 
     const [x, y] = icon.get_transformed_position();
     const [width, height] = icon.get_transformed_size();
@@ -1299,6 +1685,10 @@ export class Dock {
     const parent = this._container?.get_parent();
     parent?.set_child_above_sibling(this._container, null);
     this._inputCatcher?.placeBelow(this._container);
+    // A camada dos fantasmas mora no mesmo uiGroup e precisa ficar ACIMA
+    // da chrome: um ícone em voo passando por trás da pílula de vidro
+    // sumiria justo no fim do percurso, que é onde ele tem de ser visto.
+    this._ghostFlight?.raise();
   }
 
   _liveRect(state) {

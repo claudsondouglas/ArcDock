@@ -1,4 +1,5 @@
 import GObject from 'gi://GObject';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 
@@ -8,7 +9,12 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import { SIZE } from './config.js';
 import * as Cursor from './cursor.js';
-import { attachHoverPress, dismissTooltip, playEntry } from './iconAnimation.js';
+import {
+    attachHoverPress,
+    dismissTooltip,
+    playEntry,
+    resetHoverPress,
+} from './iconAnimation.js';
 
 const HOST_EXTRA_HEIGHT = 8;
 
@@ -66,14 +72,25 @@ class IconButton extends St.Button {
         attachHoverPress(this);
         this._setupMenu();
 
+        // Marca lida pelos handlers de fim de arraste. Pelo SINAL e não
+        // pelo destroy() daqui: quando o painel inteiro é destruído o
+        // Clutter leva os filhos por dentro, sem passar por método nenhum
+        // desta classe — só o sinal chega aos dois caminhos. O nome é
+        // qualificado de propósito: FolderIcon tem o seu próprio
+        // `_destroyed`, com o mesmo sentido mas com o ciclo de vida da I/O
+        // assíncrona dela, e uma base que escrevesse nele mexeria nas
+        // guardas de uma subclasse sem ela saber.
+        this._iconDestroyed = false;
+        this.connect('destroy', () => { this._iconDestroyed = true; });
+
         // _delegate é o que o DND lê para identificar o source no drop target.
         this._delegate = this;
         this._draggable = DND.makeDraggable(this, {
             timeoutThreshold: 150,
             restoreOnSuccess: false,
         });
-        this._draggable.connect('drag-begin', () => { this.hide(); });
-        const restore = () => { this.opacity = 255; this.show(); };
+        this._draggable.connect('drag-begin', () => this._onDragBegin());
+        const restore = () => this._onDragEnd();
         this._draggable.connect('drag-end', restore);
         this._draggable.connect('drag-cancelled', restore);
 
@@ -105,6 +122,110 @@ class IconButton extends St.Button {
 
     setTooltipText(text) {
         this._tooltipText = text;
+    }
+
+    /**
+     * Começou o arraste: o botão fica INVISÍVEL mas continua na fila.
+     *
+     * Nem `hide()`, nem deixar o dnd levar o botão embora. As duas coisas
+     * tiram o ícone da alocação do St.BoxLayout, a fila fecha na hora e não
+     * sobra buraco nenhum para os vizinhos abrirem — que é a metade visível
+     * do gesto. Mais do que isso, a célula precisa continuar MENSURÁVEL:
+     * este handler roda dentro do `_gestureRecognized()` do dnd, e logo
+     * abaixo dele o dnd mede o nosso `getDragActorSource()` para decidir
+     * onde o ícone no ar nasce e para onde ele volta num drop recusado. Um
+     * actor escondido ali é geometria inválida, e um NaN nessa conta
+     * contamina a posição do fantasma e a alocação dele.
+     *
+     * Sair do PICK era a outra metade do hide(), e é o que
+     * `util_set_hidden_from_pick` faz sozinho (é o mesmo que o dnd usa no
+     * próprio actor de arraste): sem isso o ícone seria o alvo de drop do
+     * seu próprio arraste.
+     */
+    _onDragBegin() {
+        this._dragGuard(() => {
+            // O tooltip e a escala de press seguiriam o gesto inteiro: o
+            // botão continua "apertado" para o St, porque o botão do mouse
+            // só é solto lá no drop. Nesta ordem: resetHoverPress limpa o
+            // flag de supressão do tooltip, então dispensá-lo antes não
+            // adiantaria nada.
+            resetHoverPress(this);
+            dismissTooltip(this);
+            Shell.util_set_hidden_from_pick(this, true);
+            this.opacity = 0;
+        }, 'drag begin');
+    }
+
+    _onDragEnd() {
+        // Célula já destruída: o dnd continua emitindo 'drag-cancelled' e
+        // 'drag-end' sobre o draggable, e cada toque em actor morto aqui
+        // vira exceção DENTRO do handler do Shell.
+        if (this._iconDestroyed) return;
+        this._dragGuard(() => {
+            Shell.util_set_hidden_from_pick(this, false);
+            this.opacity = 255;
+            this.show();
+        }, 'drag end');
+    }
+
+    /**
+     * Roda `fn` sem deixar NADA escapar para o dnd do Shell.
+     *
+     * O `_Draggable` é um `Signals.EventEmitter`: o `emit()` dele percorre
+     * os handlers num laço JS **sem try/catch**, e 'drag-begin' sai de
+     * dentro de `_gestureRecognized()` enquanto 'drag-end' sai de dentro de
+     * `_dragActorDropped()`. Uma exceção nossa sobe por esse emit e aborta
+     * o resto do fim de gesto — inclusive o `_dragComplete()`, que é quem
+     * devolve o `Main.pushModal` empurrado no início do arraste. O sintoma
+     * não é um gesto perdido, é o dnd da SESSÃO inteira travado.
+     */
+    _dragGuard(fn, what = 'drag handler') {
+        try {
+            fn();
+        } catch (e) {
+            logError(e, `[ArcDock] icon ${what} failed`);
+        }
+    }
+
+    /**
+     * Actor que o ponteiro carrega.
+     *
+     * Existir é o ponto: SEM este método o dnd reparenta o próprio botão
+     * para o uiGroup (dnd.js), e aí o ícone some da fila no primeiro quadro
+     * do gesto — sem buraco, sem reflow e sem casa reservada para onde
+     * voltar.
+     *
+     * Um Clutter.Clone do stage (só a ARTE, sem os dots de app rodando) e
+     * não uma textura nova: `IconButton` não sabe desenhar o ícone de
+     * ninguém — quem sabe é a subclasse —, e o clone é a única forma
+     * genérica de tirar um retrato dele daqui. O clone continua pintando
+     * mesmo com o botão em opacity 0: o ClutterClone sobrescreve a
+     * opacidade da fonte pela sua própria antes de pintá-la, e a
+     * sobrescrita curto-circuita a cadeia de pais.
+     */
+    getDragActor() {
+        let actor = null;
+        this._dragGuard(() => {
+            actor = new Clutter.Clone({
+                source: this._stage,
+                width: this._iconSize,
+                height: this._iconSize,
+            });
+        }, 'drag actor creation');
+        // Blindado pelo mesmo motivo do _dragGuard: este getter é chamado
+        // por _gestureRecognized() DEPOIS do pushModal, e uma exceção aqui
+        // deixaria o grab de pé sem nunca chegar a um fim de gesto que o
+        // devolvesse. Um ícone genérico é uma saída ruim; a sessão sem
+        // ponteiro não é saída nenhuma.
+        return actor ?? new St.Icon({
+            icon_name: 'application-x-executable',
+            icon_size: this._iconSize,
+        });
+    }
+
+    /** Onde a arte nasce, e para onde ela volta num drop recusado. */
+    getDragActorSource() {
+        return this._stage ?? this;
     }
 
     _setupMenu() {

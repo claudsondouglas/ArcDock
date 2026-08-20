@@ -4,6 +4,7 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
+import { fillAppActionsSection } from './appActionsMenu.js';
 import { INDICATOR, IndicatorStyle } from './config.js';
 import { IconButton } from './iconButton.js';
 import { triggerLaunchBounce } from './iconAnimation.js';
@@ -222,36 +223,11 @@ class DockIcon extends IconButton {
     }
 
     _rebuildActionsMenu() {
-        this._actionsSection.removeAll();
-        if (!this.app)
-            return;
-
-        // Lista das actions do .desktop antes — assim sabemos se já há
-        // uma "new-window" nelas e evitamos duplicar com o nosso item.
-        const appInfo = this.app.get_app_info?.() ?? this.app.appInfo;
-        const desktopActions = appInfo?.list_actions?.() ?? [];
-        const hasNewWindowAction = desktopActions.some(a =>
-            /new[-_]?window$/i.test(a));
-
-        if (this.app.can_open_new_window?.() && !hasNewWindowAction) {
-            const item = new PopupMenu.PopupMenuItem('Nova janela');
-            item.connect('activate', () =>
-                this.app.open_new_window(-1));
-            this._actionsSection.addMenuItem(item);
-        }
-
-        for (const action of desktopActions) {
-            const name = appInfo.get_action_name(action);
-            const item = new PopupMenu.PopupMenuItem(name);
-            item.connect('activate', () => {
-                const ctx = global.create_app_launch_context(0, -1);
-                appInfo.launch_action(action, ctx);
-            });
-            this._actionsSection.addMenuItem(item);
-        }
-
-        if (this._actionsSection.numMenuItems > 0)
-            this._actionsSection.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+        // A montagem em si mora em appActionsMenu.js: o menu de contexto da
+        // grade do launcher mostra exatamente os mesmos itens, na mesma
+        // ordem e com a mesma de-duplicação de "Nova janela". Aqui não há
+        // onLaunch — a dock não some quando o app abre.
+        fillAppActionsSection(this._actionsSection, this.app);
     }
 
     _updatePinItem() {

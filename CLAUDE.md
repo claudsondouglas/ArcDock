@@ -23,11 +23,26 @@ src/
 ├── dockItemsStore.js     — DockItemsStore: ordered typed ids in GSettings + ItemType/makeId/parseId.
 ├── recentAppsHistory.js  — RecentAppsHistory: "recently opened" queue in GSettings (no signals).
 ├── showAppsIcon.js       — ShowAppsIcon (menu St.Button, opens overview).
+├── appActionsMenu.js     — fillAppActionsSection(): "Nova janela" + .desktop actions, shared by both menus.
+├── desktopShortcut.js    — DesktopShortcut: copies a .desktop to the desktop folder (async, +x, trusted).
 ├── magnification.js      — Magnification (macOS-style hover zoom: host scale + button width).
+├── dockSlotOverlay.js    — DockSlotOverlay: the single lit cell of a drag, painted outside the layout.
+├── dockDragReflow.js     — DockDragReflow: the neighbours opening the reserved cell by translation_x.
+├── dockGhostFlight.js    — DockGhostFlight: adopts the dnd drag actor and flies it into the cell.
 ├── autoHide.js           — AutoHide (animates translation_y, pointer polling).
 ├── windowAnimations.js   — WindowAnimations (minimize via Mutter icon geometry, open via custom actor ease).
 ├── fullscreenWatcher.js  — FullscreenWatcher (primary monitor in fullscreen → dock force-hidden).
-└── dock.js               — Dock (chrome container + panel + Map<itemId, IconButton>; layout).
+├── dock.js               — Dock (chrome container + panel + Map<itemId, IconButton>; layout).
+└── appsLauncher/         — the full-screen Launchpad-style app grid:
+    ├── launcher.js       — AppsLauncher (modal overlay, search, paging, DND wiring, folders).
+    ├── launcherLayout.js — LauncherLayout: user order + folder records in GSettings; normalization.
+    ├── appGridIcon.js    — AppGridIcon: one grid cell (app OR folder), drag source and drop target.
+    ├── appGridMenu.js    — AppGridMenu: the cell's context menu (actions, pin to dock, shortcut).
+    ├── gridSlot.js       — GridSlot: the fixed cell an icon lives in; paints the hole and the drop target.
+    ├── folderPreview.js  — createFolderPreview(): the 3x3 folder cover.
+    ├── folderPopup.js    — FolderPopup: the open-folder panel with the editable name.
+    ├── appList.js        — installed apps + fuzzy search filtering.
+    └── fuzzyMatch.js     — the scoring itself.
 ```
 
 One class = one file = one responsibility. **Anything that needs cleanup never lives loose outside a tracker.**
@@ -214,13 +229,406 @@ ease from the icon rect plays instead.
   one app's).
 - `Dock` calls `syncIconGeometry()` from exactly one place, the end of `_reposition()` — every
   icon-moving path (`_refresh()`, `monitors-changed`, the panel's `notify::height`) already funnels
-  through it. Known accepted gap: a drag-drop reorder leaves geometry stale until the next
-  `_refresh()`.
+  through it — and, since the drag rework, the landing of a dropped icon, which is what closed the
+  old gap of a drag-drop reorder leaving geometry stale until the next `_refresh()`.
 - Disabling the setting clears geometry on every window (`set_icon_geometry(null)`, restoring the
   Shell's default minimize animation) and restores the original `_shouldAnimateActor` before
   going idle. `Dock.destroy()` calls `_windowAnimations.destroy()` before the icons and before
   magnification: while the patch is still installed the Shell can still ask for a rect, and
   destroying icons first would leave that callback resolving against dead actors.
+
+### Dragging a dock icon: the hole, the reflow and the flight
+
+Reordering the dock is the same gesture as reordering the app grid, and it is built from the same
+three pieces: the source icon leaves a **hole**, the neighbours **slide aside** to open the cell it
+would take, exactly **one cell is lit** as the reserved landing spot, and on drop the dragged art
+**flies into that cell** before the row is rebuilt. The machinery lives in `src/dockSlotOverlay.js`
+(the lit cell), `src/dockDragReflow.js` (the neighbours) and `src/dockGhostFlight.js` (the flight);
+`dock.js` is only the caller.
+
+- **`IconButton` must hand the dnd a drag actor, or there is no hole at all.** Without a
+  `getDragActor()`, `dnd.js` takes the *real button* out of the section box and reparents it into
+  `Main.uiGroup` — the row closes in the first frame and there is nothing for the neighbours to open.
+  So the button provides one (a `Clutter.Clone` of its own art stage; `IconButton` cannot draw
+  anybody's icon — the subclass does — and a clone is the only generic way to take a portrait of it
+  from there) and stays in the row, **`opacity = 0` plus `Shell.util_set_hidden_from_pick`, never
+  `hide()`**. The cell has to keep its allocation *and* stay measurable: the `drag-begin` handler
+  runs inside `_gestureRecognized()`, and a few lines below it the dnd measures our
+  `getDragActorSource()` to decide where the airborne art is born and where it snaps back to on a
+  refused drop — a hidden actor there is invalid geometry, and one NaN in that arithmetic spreads
+  all the way into the flight. The clone keeps painting even though its source is at zero opacity:
+  `ClutterClone` overrides the source's opacity with its own before painting it, and the override
+  short-circuits the parent chain.
+- **`opacity === 0` is now what "this icon is being dragged" means**, and every place that used to
+  read `visible === false` had to learn that: `_dropIndexAt` counts the source (it still occupies a
+  cell), `_applyOrder()` skips restoring its opacity (a `_refresh()` mid-gesture would otherwise put
+  the same app in two places at once), and `_iconRectForWindow()` refuses it by opacity instead.
+- **The drop target is the whole cell, not the boundary between two of them.** `_dropIndexAt()`
+  floors to the column the pointer is inside and clamps past-the-end to the last cell, and the index
+  it returns is already the final position in the section's visible order — exactly what
+  `_reorder(sourceId, index, box)` takes, so the section-local → global `_iconOrder` conversion is
+  untouched. Counting the airborne icon's own cell is what makes the last cell mean "goes to the end
+  of the section".
+- **The reflow is translation, never re-layout.** The icons between the origin cell and the reserved
+  one shift by exactly one cell width via `translation_x`. Reordering children per motion event would
+  relayout the whole panel — and, through the panel's `notify::height`, call `_reposition()` — once a
+  frame. The shift comes from arithmetic on the cell pitch, never from reading back a position the
+  reflow itself just moved, and `handleDragOver` (one call per motion event) bails out when the
+  reserved cell has not changed: restarting the same transitions every frame pins them at the first
+  instant of the ease and they never arrive.
+- **All the geometry is measured in NATURAL widths.** `drag-begin` calls `_suppressHover()`, which
+  turns magnification off — but `set_width(-1)` only reaches the allocation on the next layout cycle,
+  so reading `child.x` in the same handler returns the still-inflated row.
+  `get_preferred_width(-1)` is already the resting width, and the row's origin (`icons[0].x`) is the
+  one number magnification cannot move: the first icon of a box is always flush against its edge.
+- **The lit cell is painted from a layer that takes no part in the layout.** Dock icons are *not*
+  wrapped in slot actors the way grid cells are: the section rows are the `St.BoxLayout`s where
+  magnification pushes neighbours by fixing an explicit width on the button, and a fixed-size slot
+  container would kill that. Instead a fixed-layout, non-reactive child of `glassHost` holds the
+  plate, positioned in the section box's own coordinates. Three traps live in that one actor:
+  - It is the **last** child of `glassHost` on purpose. A `Clutter.BindConstraint` is what glues it
+    to the section box, and a constraint reads the source's allocation at the moment the *constrained*
+    actor is allocated — children are allocated in tree order, so a layer sitting below the panel
+    would read the previous frame's box. That matters most in the first instant of the gesture, when
+    magnification has just been switched off and every width in the row is about to change. The price
+    is painting above the icons, and it is cheap: the lit cell is, by construction, the empty one.
+  - Its **natural size is zero**, and the constraint is what gives it a size. Otherwise it would
+    enter `BinLayout`'s preferred-size arithmetic and could stretch the glass pill itself because of
+    a decoration square.
+  - Layer and plate are **out of the pick**, not merely non-reactive — the same wall documented for
+    the launcher's ghost layer. `PickMode.ALL` sees non-reactive actors, so a layer over the panel
+    would stop the pick, and its parent has no `_delegate`: the whole dock would go inert for drops
+    from the first drag on.
+- **One cell is lit, and it is the reserved one.** At `drag-begin` the reserved cell is the origin,
+  painted `EMPTY` — nothing has moved yet, and that is where the icon returns if the gesture ends
+  where it started. From the first `handleDragOver` on it is the cell under the pointer, painted
+  `TARGET` (one extra hairline). With the neighbours closing the hole behind the dragged icon, the
+  only real gap on screen is the cell it will land in; a second lit square would announce a second
+  free place, and one of them would be a lie.
+- **The dropped icon flies to its cell, and the reorder waits for it.** `acceptDrop` receives the dnd
+  drag actor and *adopts* it — dnd destroys that actor only if it is still a child of `Main.uiGroup`
+  (dnd.js), so reparenting it into our ghost layer is what buys the animation. The reorder is the
+  flight's **landing callback**, not something `acceptDrop` does: the real icon appears in the frame
+  the ghost finishes, which is the seam that makes them read as the same object. While the ghost is
+  in the air the source icon is kept hidden (`IconButton` shows itself again at `drag-end`, as it does
+  at the end of every gesture), the **reflow stays standing** (the ghost lands exactly in the cell the
+  neighbours opened, and zeroing the translations at `drag-end` would snap the row back and then
+  forward again), and hover/magnification stay suppressed — resuming them would let the panel inflate
+  under the pointer while the ghost is still aiming at a cell measured in resting widths. The
+  translations are zeroed **without animating** right after `_applyOrder()`: the new allocation puts
+  every icon on the very pixel its translation was drawing it at, so the zero is invisible.
+- **A flight that never lands would strand the whole gesture**, so `DockGhostFlight` never lets the
+  callback be lost: a non-finite geometry, a failed adoption or a missing destination runs it
+  synchronously instead of flying, a *removed* transition (which never fires its `onComplete`) is
+  covered by zeroing the counter by hand wherever ghosts are killed, and an independent watchdog
+  timer force-lands anything still counted after the duration plus a slack, with a line in the
+  journal. Without it the order would never be applied, the source icon would stay invisible and the
+  dock would stay hover-dead — the classic "it only works the first time".
+- **The pick flag has to be undone by hand after a flight.** `_applyOrder()` restores visibility and
+  opacity but knows nothing about the pick, and the flight path takes the source out of it. Landing
+  goes through `_showDragSource()` first; without it the icon comes back on screen permanently inert —
+  no click, no hover, no menu.
+- **Nothing of ours may throw inside the dnd's `emit`.** `_Draggable` is a `Signals.EventEmitter`: its
+  `emit()` walks the handlers in a plain JS loop with no try/catch, `drag-begin` comes from inside
+  `_gestureRecognized()` and `drag-end` from inside `_dragActorDropped()`. An exception of ours rides
+  that emit up and aborts the rest of the gesture — including `_dragComplete()`, which is what pops
+  the modal grab pushed at the start of the drag. The symptom is not a lost gesture, it is the whole
+  session's dnd wedged. So `IconButton._dragGuard` and `Dock._dndGuard` wrap every callback we hand
+  to the Shell; dnd's own try/catch covers only the `acceptDrop` call.
+- **Every end that is not a successful drop eases the row home**: a refused drop, a cancel, a drop
+  that changed nothing and the pointer leaving the panel all go through `_clearDragDecor()`. The
+  pointer leaving is only knowable through a `DND.addDragMonitor` — `handleDragOver` runs only while
+  we are the target and there is no `handleDragOut` — and clearing there also marks the session
+  **stale**: undoing the reflow ends its bookkeeping (which cell was the origin, who was displaced),
+  and without the mark the `handleDragOver` on the way back would find a session that calls itself
+  good over a reflow that no longer knows where to start, and the row would never open again for the
+  rest of the gesture. `acceptDrop` still returns **true when nothing changed**: a drop in the same
+  cell was handled, and returning false would fly the art back to its origin as if the gesture had
+  failed.
+- **A `_refresh()` in the middle of a gesture invalidates the session, and says so.** `_applyOrder()`
+  marks it stale and the next `handleDragOver` rebuilds it from the row that is actually on screen —
+  the indices a session holds describe a row that no longer exists. This is also the path that covers
+  a `drag-begin` where something blew up before the session was established.
+- **The sections do not change.** A drop still lands only in the source's own section
+  (`_acceptsDrop`), recents are still not a drop target and still not reorderable (`_isReorderable`
+  gates on `_iconOrder`), and `_persistOrder()`'s "ids this version cannot render stay anchored"
+  behaviour is untouched. Dragging a recent still goes through `IconButton`'s opacity trick, so its
+  row keeps a hole instead of collapsing — but no cell is lit and nothing reflows, because there is
+  no position for it to take.
+- **The landing calls `_reposition()`**, which is the single funnel for `syncIconGeometry()`: a
+  drag-drop reorder moves icons without going through `_refresh()`, and the previously accepted gap
+  of "minimize animations aim at the old position until the next refresh" is closed with it.
+
+### Apps launcher: user order and folders
+
+The full-screen grid (`src/appsLauncher/`) is a Launchpad clone: the order is **the user's**, and
+dragging one app onto another creates a folder.
+
+- **Nothing is sorted A–Z any more except newcomers.** `getInstalledApps()` still returns a
+  collated list, but that order only decides where a *freshly installed* app lands (appended at
+  the end) and the tie-break inside search results. The grid itself renders `LauncherLayout.build()`,
+  which is the user's arrangement.
+- **`LauncherLayout` is the model; the launcher only draws.** Order lives in `launcher-layout`
+  (`as`, typed `app:<desktop-id>` / `folder:<uuid>` ids, same `parseId`-on-the-first-colon
+  convention as `dockItemsStore`), folder records in `launcher-folders` (`s`, JSON keyed by the
+  BARE uuid). **Nothing listens to `changed::` on either key** — the launcher itself is the only
+  writer, and a listener would bounce `build()`'s own normalization write straight back into the
+  rebuild that produced it (same reasoning as `recent-apps`).
+- **`build()` normalizes on every open**, and that is where the rules live: an app that is not
+  installed keeps its slot in the stored order but is not drawn (an upgrade that removes the
+  `.desktop` for a few seconds must not silently destroy the arrangement); an id type this version
+  cannot render is preserved verbatim; and **a folder with fewer than two resolvable members is
+  not a folder** — 1 member dissolves back into that app *in the folder's slot*, 0 disappears.
+  The rule is checked on every build and not only on drag-out, because uninstalling also shrinks
+  a folder.
+- **Merge vs. reorder is pure geometry, decided in two different delegates.** `AppGridIcon` is its
+  own `_delegate`: the middle of the cell means "make a folder" (`MOVE_DROP`), the
+  `MERGE_EDGE_RATIO` slice at each edge returns `CONTINUE` so the event keeps bubbling. The **page**
+  actor carries the reorder delegate — the dnd finds a drop target by walking up from the picked
+  pixel, so an empty cell or the gap between two of them reaches it for free (the cells are
+  non-reactive, which does not matter: dnd picks with `PickMode.ALL`).
+- **The grid is slots, and slots never move.** Every cell is a `GridSlot` of fixed size — icon plus
+  the label band — and the icon lives inside it. The slots are the fixed frame of the gesture:
+  they are what the drop index, the highlight and the ghost's landing rect are all measured
+  against, and none of them ever moves.
+- **The icons do reflow, by translation.** While a dragged icon travels over the grid the others
+  step aside to open the cell it would take (`_applyReflow`), the way Launchpad does. It is
+  `translation_x/y` on the `AppGridIcon` itself, never a rebuild: each `_rebuildPages()` recreates
+  hundreds of icon textures, and doing that per motion event is unaffordable. The offsets come
+  from arithmetic on the metrics (`_cellDelta`: every row has exactly `columns` cells and every
+  cell is the same size, so `(col' - col)·cellWidth` is exact) rather than from reading actor
+  geometry, which would be reading back a position the reflow itself just moved. The current
+  offset map is kept so `handleDragOver` — one call per motion event — can bail out when the
+  target cell has not changed.
+- **The reflow stops at the page border.** Only icons whose source *and* destination cells are on
+  the visible page take part, and if the queue does not fit whole on that page it is not shown at
+  all: the icon at the end would move to a page nobody is looking at, and leaving it parked while
+  its neighbour advances would put two icons in the same cell — which reads worse than nothing
+  moving. In practice that only excludes the two cases where the queue runs off the edge: an app
+  coming out of a folder onto a page that is already full, and a drag whose origin is on another
+  page. A same-page reorder always fits.
+- **One cell is lit, and it is the reserved one.** With the neighbours closing the hole behind the
+  dragged icon, the only real gap on screen is the cell it will land in — two lit cells would
+  announce two free places, and one of them would be a lie. At the start of the gesture the
+  reserved cell is the origin (painted `SlotPaint.EMPTY`: nothing has moved yet); from the first
+  `handleDragOver` on it is the cell under the pointer (`TARGET`, one extra hairline border).
+- **The drop target is the whole cell, not the boundary between two of them.** `_dropSlotAt()`
+  floors to the column instead of rounding to the frontier, and the index it returns is already
+  the final position in the visible order — exactly what `moveTo()`/`removeFromFolder()` take.
+  Empty cells past the last icon clamp to the last real slot, so the highlight never promises a
+  position the layout cannot give. While an icon is lit as a merge target its own `onMergeHover`
+  undoes the reflow and hands the reservation back to the **origin** cell: the answer to the drop
+  stopped being "goes into this position" and became "joins this icon", and nothing is going to be
+  reorganized because of it (the page's `handleDragOver` stops running the moment the icon claims
+  the drop, so it cannot notice on its own). The pointer leaving the icon puts the page's handler
+  back in charge and the reflow rebuilds itself.
+- **The dropped icon flies to its slot, and the rebuild waits for it.** `acceptDrop` receives the
+  dnd's drag actor and *adopts* it — dnd destroys that actor only if it is still a child of
+  `Main.uiGroup` (dnd.js), so reparenting it to the launcher's ghost layer is what buys the
+  animation. It flies to the destination slot's art rect (into the target icon's, shrinking and
+  fading, when the drop makes a folder), and only when it lands does the grid rebuild, so the real
+  icon appears in the frame the ghost finishes. While a ghost is in the air the source icon is
+  kept hidden — `AppGridIcon` shows itself again at `drag-end`, and without that the same app
+  would be in two places at once. The **reflow stays standing** for that same window: the ghost
+  lands exactly in the cell the neighbours opened, and zeroing the translations at `drag-end`
+  would snap the grid back and then forward again one idle later. Only the rebuild clears it —
+  fresh icons are born with no translation. Every other end of gesture (refused drop, cancel,
+  a drop that changed nothing) goes through `_clearTargetSlot()`, which eases everyone home.
+- **Every layout mutation rebuilds through `_scheduleRefresh()`, never inline.** `acceptDrop`
+  returns into dnd code that is still holding the drag actor and the source cell; destroying the
+  grid inside it pulls the rug out. The rebuild is one idle callback later and keeps the current
+  page. A flight in progress dams it (`_flushRefresh` opens the dam), and a *removed* transition
+  never fires its `onComplete` — so the flight counter is zeroed by hand wherever ghosts are
+  killed, or the grid would stay dammed forever. `_armFlyWatchdog()` is the independent witness
+  that the dam always opens: a transition that never completes for any reason (an actor that never
+  got an allocation, a path that kills a ghost without going through `_clearGhosts`) would leave
+  `_refreshPending` standing forever — the grid never rebuilds again, the source icon stays hidden,
+  and every later drop is a gesture with no effect. The timer turns that into a half-second hiccup
+  plus a line in the journal.
+- **The ghost layer must be out of the pick, not just non-reactive.** It is a screen-sized
+  `St.Widget` sitting at the top of the `uiGroup`, and the dnd does not find its drop target by
+  event propagation — it calls `get_actor_at_pos(PickMode.ALL, …)` and walks up from the picked
+  pixel. `PickMode.ALL` sees non-reactive actors (that is exactly what lets an empty grid cell
+  accept a drop), so without `Shell.util_set_hidden_from_pick` the layer is a wall: the pick stops
+  on it, its parent is the `uiGroup` (no `_delegate` anywhere above), and the whole grid goes
+  inert — no `handleDragOver`, no `acceptDrop`. The wall only goes up on the FIRST flight, which
+  is what gave this the shape of "the first reorder works, the second does nothing": the layer is
+  born *after* the first drop's pick, and eats every one after it. Reopening the launcher appeared
+  to fix it because `open()` raises the overlay back to the top of the `uiGroup` — above the
+  layer — buying exactly one more drop.
+- **Nothing of ours may throw inside the dnd's `emit`.** `_Draggable` is a `Signals.EventEmitter`:
+  its `emit()` walks the handlers in a plain JS loop with no try/catch, and `drag-begin` is emitted
+  from inside `_gestureRecognized()` while `drag-end` comes from inside `_dragActorDropped()`. An
+  exception of ours rides that emit up and aborts the rest of the gesture — including
+  `_dragComplete()`, which is what pops the modal grab pushed at the start of the drag. The symptom
+  is not a lost gesture, it is the whole session's dnd wedged: the grab stands forever, no new drag
+  begins, and Escape lands in the `_cancelDrag` of a drag that already ended. So every callback
+  `AppGridIcon` hands to the Shell (`getDragActor`, the `drag-begin`/`drag-end`/`drag-cancelled`
+  handlers, `onMergeHover`, `canMerge`) goes through `_guard`/`_notifyDnd`. dnd's own try/catch
+  around `acceptDrop` covers only that one call.
+- **The dragged cell goes out of the pick, but never `hide()`.** `Shell.util_set_hidden_from_pick`
+  plus `opacity = 0` — which is what keeps it from being the drop target of its own drag, and is
+  the same thing dnd does to the drag actor. It must stay *measurable*: the `drag-begin` handler
+  runs inside `_gestureRecognized()`, and a few lines below it the dnd measures our
+  `getDragActorSource()` to decide where the airborne icon is born and where it snaps back to on a
+  refused drop. A hidden actor there is invalid geometry, and one NaN in that arithmetic spreads —
+  `set_position(NaN)` makes `clutter_actor_allocate` bail on an assertion, the actor never gets an
+  allocation, and the flight that was supposed to release the grid may never land. `_flyGhost`
+  checks every number it computed with `Number.isFinite` before touching an actor for the same
+  reason: no flight is ugly, a NaN flight is fatal.
+- `acceptDrop` on the page returns **true even when nothing changed**: a drop in the same slot was
+  handled, and returning false would fly the icon back to its origin as if the gesture had failed.
+- **Search is a different mode.** With a query the grid is a flat, relevance-ordered list of *apps*,
+  including the ones living inside folders (looking for an app should never require remembering
+  which folder it ended up in), and drag-and-drop is switched off — reordering a list that is not
+  the persisted order would write nonsense.
+- **`FolderPopup` is a child of `uiGroup`, not of the launcher's actor**, which is an
+  `St.BoxLayout` where an overlay child would take part in the vertical layout. It takes no grab
+  (the launcher already holds one on `uiGroup` and the popup lives inside it), so Escape is
+  handled by the launcher and `isEditingName` is what stops `_onKeyPress` from stealing the
+  keystrokes of a rename.
+- **Dragging an app OUT of an open folder** needs the panel to get out of the way:
+  `setDragMode(true)` fades the popup and then **hides** it — fading alone is not enough,
+  `PickMode.ALL` still finds an invisible cell, and the drop would land on the panel instead of
+  the grid. It is not closed, because closing would destroy the source cell mid-gesture and dnd
+  needs it to undo a refused drop; the launcher closes it for real at `drag-end`, and only if
+  something actually changed.
+
+### Apps launcher: when the grid closes
+
+The grid leaves the screen by three gestures and no others: **launching an app**, **Escape**, and
+the **Applications button** (plus the dock-side paths — clicking a dock icon activates an app, and
+a dock context menu would otherwise open *underneath* the overlay).
+
+- **Nothing is connected to the grab's `notify::revoked`.** Clutter grabs are a stack and any modal
+  pushed on top revokes the one below for as long as it lasts — and the Shell pushes modals inside
+  perfectly ordinary gestures: `dnd.js` calls `Main.pushModal()` on its own event actor the moment
+  a drag gesture is recognized, and so do menus and popups. Closing on that revocation meant
+  holding an icon to move it tore the launcher down in the first frame of the gesture. Losing the
+  grab does not make the overlay useless either: it is a full-screen reactive actor in the
+  `uiGroup`, so it keeps receiving clicks, and the key focus goes back to the search field when the
+  modal above pops. The grab buys exclusivity, not events — which is why the Shell itself never
+  watches that property.
+- **Clicking the empty background does not close it** (neither the overlay's own pixel nor the
+  shield). Both still *consume* the click — nothing underneath may react while the grid is up — but
+  an icon dropped in the gap between two cells ends its gesture with exactly one button-release on
+  that background, and closing there turned every slightly-off drop into a dismissal.
+
+### Apps launcher: the context menu
+
+Right-clicking an app cell in the grid opens a `PopupMenu` anchored to it: the app's own
+actions, then "Fixar na dock"/"Desafixar da dock", then "Criar atalho na área de trabalho".
+The first block is literally the dock's — `fillAppActionsSection()` in `src/appActionsMenu.js`
+is what `DockIcon._rebuildActionsMenu()` calls too, so the "Nova janela" de-duplication against a
+`.desktop` action matching `/new[-_]?window$/i` has one implementation, not two.
+
+- **Folders get no menu at all.** Everything the menu offers is about an installed app, and a
+  `folder:` cell has no `Shell.App` — `AppGridIcon.toggleMenu()` returns early on `!this.app`.
+- **The menu is built on the FIRST right-click of that cell, never in the constructor.** A
+  `_rebuildPages()` creates hundreds of cells and throws them all away on the next reorder; a
+  `PopupMenu` + `PopupMenuManager` per cell would be thousands of actors to show at most one.
+  Cheap for the dock (ten icons), unaffordable here.
+- **The menu actor lives in `uiGroup`, so `AppGridIcon` must destroy it by hand.** It is not a
+  child of the cell and nothing would take it down with the grid — and "leaks once" would in
+  practice mean "leaks on every reorder". `_onDestroyed()` nulls `_menu` *before* calling
+  `destroy()` on it (so the close it triggers cannot re-enter) and nulls `_menuPolicy` *after*
+  (so that close still reaches the launcher).
+- **The volatile half is rebuilt on every open**, same reason as the dock's `_populateMenu()`:
+  `can_open_new_window()` of many apps only becomes true once the app is running, and the pin
+  label has to be read from the store at that instant — the dock may have been changed from
+  `prefs.js`, in another process, between two right-clicks.
+- **Arrow side is `St.Side.TOP` and the bottom row needs no special case.** `BoxPointer`
+  flips to `BOTTOM` on its own (`_calculateArrowSide`) when the box does not fit below the
+  source and does fit above, so the constant is a preference, not a decision.
+- **Right-click never reaches the click path.** `St.Button`'s default `button_mask` is button 1
+  only, so button 3 produces no `clicked` — neither the press bounce nor `DRAG_CLICK_GUARD_US`
+  has anything to do with this route. The handler returns `EVENT_STOP` so the press dies on the
+  cell instead of bubbling to the overlay (which consumes its own empty pixel). `toggleMenu()`
+  also refuses while `_dragging`.
+
+#### The menu and the grid's grab
+
+The launcher holds a modal grab on `uiGroup`; `PopupMenuManager` pushes **another** modal on
+`menu.actor` on top of it, revoking ours for as long as the menu is up. That is normal and
+nothing may start watching `notify::revoked` — see **when the grid closes**. What matters is
+what the redirection does to each of the launcher's own handlers:
+
+- **Escape closes the menu, not the grid, for free.** The manager consumes it on `captured-event`
+  over `menu.actor`, which is the *capture* phase; `AppsLauncher._onKeyPress` is a bubble-phase
+  handler and never sees it.
+- **Every other key DOES reach us, and that is the trap.** `menu.actor` is a child of `uiGroup`,
+  and the launcher listens for `key-press-event` there — so with the menu open, the first letter
+  typed would fall into the "any printable character goes back to the search" fallback, which
+  calls `grab_key_focus()` on the entry and rips the focus out of the menu. `_onKeyPress` is
+  therefore gated on `_isMenuOpen()`, exactly the way `FolderPopup.isEditingName` gates it.
+  `_isMenuOpen()` re-asks the icon instead of trusting `_menuIcon`: a cell that died without
+  emitting its close would otherwise leave the launcher's keyboard diverted forever.
+- **The background handlers are not reached at all.** With the grab, a click anywhere else is
+  delivered to `menu.actor`, so the overlay's `button-press-event`/`_onButtonRelease` never run
+  and the dismissing click cannot be mistaken for anything. The button *release* that follows
+  lands normally on the overlay and is only consumed — which is why dismissing a menu over
+  another cell does not launch it (that cell never got the press).
+- **Keyboard entry point is the launcher, not the cell.** Cells are `can_focus: false` (the focus
+  lives in the search field), so Menu / Shift+F10 are handled in `_onKeyPress` and forwarded to
+  the selected cell, lighting the selection first if it was not visible.
+
+#### What each item does to the grid
+
+- **A `.desktop` action or "Nova janela" closes the grid**, like any other launch. `onLaunch` is
+  called **before** the launch, not after: the overlay holds a seat grab and a new window cannot
+  take focus while it stands — the same ordering `_launch()` documents. `close()` is safe from
+  inside an item's `activate`: it releases the grab and starts the fade, and only destroys the
+  cells (and with them the menu) in the ease's `onComplete`, long after the `ConnectFlags.AFTER`
+  handler that closes the menu has run.
+- **Pinning and creating a shortcut leave the grid open.** The menu closes itself (the Shell's
+  AFTER handler), nothing else moves.
+- **Nothing of ours throws into the Shell.** `AppGridMenu._guard` wraps `_populate()` and every
+  item handler for the same reason as `AppGridIcon._guard`: `_populate()` runs inside a
+  `button-press-event`, and the item handlers run inside `emit('activate')` — whose AFTER
+  continuation is what closes the menu and pops its modal. An exception there leaves the menu
+  standing on a grab nobody will return.
+
+#### Pinning: the store stays the dock's
+
+`AppsLauncher` takes `isAppPinned(desktopId)` and `onTogglePinned(desktopId)` as constructor
+params and **never constructs a `DockItemsStore` of its own**. A second instance would write
+`dock-items` in parallel with the dock's and fight the echo suppression that `_persistOrder`
+does on its own writes. The two are optional, and optional *together*: without both, the pin
+item is simply not created — a menu that can read the state but not write it (or the reverse)
+would carry a lying label. The launcher hands the policy object to every cell, one object for
+the whole grid: it has no per-icon state (the cell arrives as an argument to `stateChanged`).
+
+#### The desktop shortcut
+
+`src/desktopShortcut.js` copies the app's `.desktop` into
+`GLib.UserDirectory.DIRECTORY_DESKTOP` (falling back to the home dir — for many users those are
+the same folder, and refusing there would be worse than writing there).
+
+- **A byte-for-byte copy, never a hand-written ini.** The real file carries `Icon`, an `Exec`
+  with its field codes, the declared actions and every translated `Name[xx]`; synthesizing it
+  loses all of that.
+- **`create_async` and not `replace_contents_async`.** Exclusive creation *is* the existence
+  test, done by the kernel in one step; a `query_info` followed by a write is two round trips
+  with a window in between, and losing that race means overwriting a shortcut the user edited by
+  hand. `EXISTS` is what drives the `firefox.desktop` → `firefox-1.desktop` suffix loop, capped
+  so a pathological directory cannot turn into an endless queue of I/O inside the compositor.
+- **The write loops.** `write_bytes_async` may legitimately write *less* than asked; a truncated
+  `.desktop` is worse than no shortcut at all — it exists, it has an icon, and it opens nothing.
+- **Executable AND trusted, in two separate calls.** GNOME refuses to launch a desktop file that
+  is not both. `unix::mode` is on the inode and failing it is a real failure (the file shows up
+  as text); `metadata::trusted` lives in the gvfs metadata backend, which may simply not be
+  running — that one only warns in the journal, because the shortcut is already created and
+  working.
+- **All of it asynchronous, with one `Gio.Cancellable` per job**, cancelled in `destroy()`. This
+  is the **Filesystem I/O** rule, not a preference: a sync copy on a dead NFS home freezes the
+  session. Every callback re-asks `_alive(job)` — destroyed, cancelled, or already finished —
+  before touching anything, and a cancellation is never reported as an error (the thing that
+  cancelled it was the extension going away).
+- **One instance for the whole launcher, not one per cell.** The cancellables die with
+  `AppsLauncher.destroy()`; hung on the cells, the first grid rebuild after the click would
+  cancel the copy the user just asked for.
+- Failures `logError` with the `[ArcDock]` prefix **and** `Main.notifyError`: a menu item that
+  silently does nothing reads as broken. Success stays quiet — the file appearing is the feedback.
 
 ### Filesystem I/O
 
