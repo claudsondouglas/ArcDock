@@ -1,0 +1,847 @@
+/* ArcDock — translucent dock inspired by macOS Tahoe.
+ *
+ * The translucent rim has THREE visual layers, not one solid border:
+ *   1. A bright top edge — the light refracted through the upper bevel.
+ *   2. A subtle bottom edge — interior shadow under the lower bevel.
+ *   3. Soft side rims — gentle highlights that connect top and bottom.
+ *
+ * GNOME St CSS doesn't support `backdrop-filter` (handled by
+ * Shell.BlurEffect in src/glassEffect.js), nor multiple box-shadows,
+ * nor `border-image` reliably. But it DOES accept per-side borders,
+ * which is enough to fake the multi-tone glass rim below.
+ */
+
+.arcdock-panel {
+    spacing: 4px;
+    padding: 4px 4px;
+    padding-bottom: 0px;
+    /* Precisa acompanhar SIZE.PANEL_RADIUS em src/config.js. */
+    border-radius: 24px;
+
+    /* Glass body: bem mais translúcido que uma "milk glass" — o frosted
+     * do macOS deixa o wallpaper atravessar e conta com o blur (mais
+     * forte, ver glassEffect.js) para manter os ícones legíveis. O leve
+     * gradiente vertical é o que resta do highlight interno do topo. */
+    background-gradient-direction: vertical;
+    background-gradient-start: rgba(255, 255, 255, 0.36);
+    background-gradient-end: rgba(255, 255, 255, 0.20);
+
+    /* Hairline rim à la macOS: fino e quase uniforme. O topo é o mais
+     * claro (pega a luz), as laterais um pouco menos, a base quase some.
+     * Alphas altos nas laterais liam como MOLDURA, não como refração. */
+    border-top: 1px solid rgba(255, 255, 255, 0.55);
+    border-left: 1px solid rgba(255, 255, 255, 0.38);
+    border-right: 1px solid rgba(255, 255, 255, 0.38);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+
+    /* Outer shadow: mais difusa e mais baixa que antes — a do macOS é
+     * um halo suave, não uma sombra dura de elevação. */
+    box-shadow: 0 10px 32px 0 rgba(0, 0, 0, 0.32);
+}
+
+/* Actor que carrega o Shell.BlurEffect, recuado para dentro do painel
+ * (BLUR_INSET em config.js). Não pinta nada por conta própria — só
+ * existe para dar ao blur um retângulo que caiba nos cantos redondos. */
+.arcdock-blur-backdrop {
+    background-color: transparent;
+    /* PANEL_RADIUS - BLUR_INSET (24 - 8): o canto do retângulo interno
+     * segue o arco do painel sem escapar dele. */
+    border-radius: 16px;
+}
+
+.arcdock-icon,
+.arcdock-icon:hover,
+.arcdock-icon:active,
+.arcdock-icon:focus,
+.arcdock-icon:focus:hover,
+.arcdock-icon:checked,
+.arcdock-icon:checked:hover,
+.arcdock-icon:selected,
+.arcdock-icon:outlined,
+.arcdock-icon:insensitive {
+    padding: 2px;
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    background-gradient-direction: vertical;
+    background-gradient-start: transparent;
+    background-gradient-end: transparent;
+    border: none;
+    border-image: none;
+    border-radius: 14px;
+    box-shadow: none;
+    outline: none;
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+.arcdock-menu-icon {
+    color: rgba(255, 255, 255, 0.95);
+}
+
+/* `color` só pinta a variante symbolic — é o fallback para temas de
+ * ícone que não trazem o "view-app-grid" fullcolor (o Launchpad dos
+ * temas estilo macOS). Nada de -st-icon-style aqui: forçar symbolic
+ * descartaria justamente o ícone colorido que a dock quer mostrar. */
+.arcdock-menu-icon-texture {
+    color: rgba(255, 255, 255, 0.95);
+}
+
+/* Nenhuma textura de ícone desenha fundo/rim próprio — o que aparece
+ * atrás do ícone é sempre o vidro do painel, nunca uma caixa. */
+.arcdock-icon-texture {
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+}
+
+.arcdock-icon-host {
+    background-color: transparent;
+    box-shadow: none;
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+.arcdock-running-indicator {
+    /* Sem padding/margem: o DockIcon posiciona o container a partir da
+       largura que ele mesmo calcula para os pips. */
+    padding: 0;
+    margin: 0;
+    background-color: transparent;
+}
+
+.arcdock-indicator-bar {
+    border-radius: 999px;
+    background-color: rgba(25, 25, 25, 0.92);
+    box-shadow: 0 1px 2px 0 rgba(255, 255, 255, 0.25);
+}
+
+/* Branco a 60% e sem sombra: o vidro claro já é translúcido sobre o
+ * wallpaper, então um ponto escuro lia como sujeira e qualquer halo ao
+ * redor lia como segundo ponto desfocado. Opaco, porém, o ponto virava
+ * um furo chapado no vidro — a 60% ele ainda separa do painel mas deixa
+ * o fundo atravessar, que é o indicador discreto do macOS. A
+ * largura/altura aqui só valem para o .arcdock-menu-dot (o placeholder
+ * invisível do botão Applications, que não fixa tamanho em JS): o ponto
+ * real usa INDICATOR.DOT_SIZE_LIGHT, um pixel menor. */
+.arcdock-running-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.60);
+    box-shadow: none;
+}
+
+.arcdock-attention-dot {
+    border-radius: 999px;
+    background-color: rgb(238, 64, 64);
+    border: 1.5px solid rgba(255, 255, 255, 0.95);
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.35);
+}
+
+.arcdock-menu-dot {
+    background-color: rgba(25, 25, 25, 0);
+    box-shadow: none;
+}
+
+.arcdock-tooltip {
+    spacing: 0;
+}
+
+/* Cores explícitas (e não as herdadas de popup-menu-content) porque o
+ * bubble segue o tema da DOCK, não o do shell: com um shell escuro e a
+ * dock clara, o tooltip herdado sairia escuro. A seta é pintada em
+ * Cairo lendo o background já resolvido do label (ver iconAnimation.js),
+ * então basta trocar a cor aqui para que ela acompanhe. */
+.arcdock-tooltip-label {
+    margin: 0;
+    min-height: 0;
+    padding: 5px 10px;
+    border: none;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    background-color: rgba(250, 250, 252, 0.96);
+    color: rgba(24, 24, 26, 0.95);
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.25);
+}
+
+
+/* O stage não pinta NADA: ele existe para pendurar o indicador e as
+ * animações, e o que o usuário vê ali é a textura do ícone sobre o vidro
+ * do painel. Sem fundo próprio em estado nenhum — ver o bloco do hover no
+ * fim do arquivo. */
+.arcdock-icon-stage {
+    background-color: transparent;
+    box-shadow: none;
+}
+
+/* Divisor entre a seção principal e os "abertos recentemente". Preto
+ * translúcido no tema claro: o vidro claro já é branco por dentro, e um
+ * fio branco sobre ele desapareceria — o que lê como separação aqui é a
+ * sombra, não o brilho. Largura e altura vêm do Dock (RECENT.SEPARATOR_*
+ * em config.js), que precisa delas para centrar o fio. */
+.arcdock-separator {
+    background-color: rgba(0, 0, 0, 0.20);
+    border-radius: 999px;
+}
+
+/* ------------------------------------------------------------------
+ * Tema escuro
+ *
+ * Só OVERRIDES: o Dock adiciona .arcdock-panel-dark ao painel além de
+ * .arcdock-panel, então tudo que não aparece aqui continua vindo do tema
+ * claro acima. Os filhos são alcançados por seletor descendente (St
+ * suporta), o que dispensa carimbar classe em cada pip.
+ * ------------------------------------------------------------------ */
+
+.arcdock-panel.arcdock-panel-dark {
+    /* Espelho do vidro claro, com mais alpha: vidro escuro precisa de
+     * mais corpo que o claro para continuar lendo como ESCURO sobre um
+     * wallpaper claro — com o alpha do claro ele viraria só cinza. */
+    background-gradient-start: rgba(28, 28, 32, 0.50);
+    background-gradient-end: rgba(22, 22, 26, 0.38);
+
+    /* O rim branco quase some no dark mode do macOS: sobra um fio no
+     * topo pegando a luz e um sussurro nas laterais. Alphas de tema
+     * claro aqui desenhariam uma moldura branca em volta da dock. */
+    border-top: 1px solid rgba(255, 255, 255, 0.22);
+    border-left: 1px solid rgba(255, 255, 255, 0.14);
+    border-right: 1px solid rgba(255, 255, 255, 0.14);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+
+    /* Um pouco mais densa: o vidro escuro precisa se descolar do fundo
+     * sem contar com o rim, que aqui é quase invisível. */
+    box-shadow: 0 10px 32px 0 rgba(0, 0, 0, 0.45);
+}
+
+/* Indicadores de app rodando invertidos: claros sobre o vidro escuro,
+ * com a sombra também invertida (escura, para dar profundidade em vez
+ * de halo). O inline style de "usar cor do tema" continua ganhando dos
+ * dois — é uma escolha explícita do usuário. */
+.arcdock-panel-dark .arcdock-indicator-bar,
+.arcdock-panel-dark .arcdock-running-dot {
+    background-color: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.35);
+}
+
+/* Reservador de espaço do botão Applications: invisível nos dois temas
+ * (alpha 0), mas herdaria o branco da regra acima sem este override. */
+.arcdock-panel-dark .arcdock-menu-dot {
+    background-color: rgba(255, 255, 255, 0);
+    box-shadow: none;
+}
+
+/* Vermelho de atenção é o mesmo nos dois temas — é um alerta, não
+ * decoração. Só o anel branco cede: sobre vidro escuro ele já separa
+ * com bem menos alpha, e no valor do claro pareceria um adesivo. */
+.arcdock-panel-dark .arcdock-attention-dot {
+    border: 1.5px solid rgba(255, 255, 255, 0.75);
+    box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.5);
+}
+
+/* Divisor invertido: sobre o vidro escuro é o BRILHO que separa, com o
+ * mesmo alpha do fio preto do tema claro. */
+.arcdock-panel-dark .arcdock-separator {
+    background-color: rgba(255, 255, 255, 0.20);
+}
+
+/* .arcdock-menu-icon / -texture não têm variante escura de propósito:
+ * o branco 0.95 do tema claro (fallback symbolic do Launchpad) é
+ * exatamente a cor certa sobre o vidro escuro. */
+
+/* O tooltip NÃO é descendente do painel (vive no uiGroup), então esta
+ * classe é escolhida na criação do bubble — ver setTooltipTheme(). */
+.arcdock-tooltip-label-dark {
+    background-color: rgba(38, 38, 42, 0.96);
+    color: rgba(255, 255, 255, 0.95);
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.45);
+}
+
+/* ------------------------------------------------------------------
+ * Launcher de apps (estilo Launchpad)
+ *
+ * O overlay cobre o monitor inteiro e carrega o Shell.BlurEffect no
+ * próprio actor raiz — aqui não há canto arredondado, então o retângulo
+ * do blur coincide com o actor e o recuo que a dock precisa
+ * (.arcdock-blur-backdrop) não faz sentido. O que estas regras pintam é
+ * a TINTA por cima desse borrão, e o vocabulário é o mesmo do painel:
+ * branco translúcido para o vidro, alphas baixos para o rim.
+ *
+ * Os rótulos são brancos nos DOIS temas: o fundo é sempre uma tinta
+ * escura sobre o wallpaper (é o que faz a grade legível sobre qualquer
+ * papel de parede), então o tema escuro muda a densidade da tinta, não
+ * a cor do texto.
+ * ------------------------------------------------------------------ */
+
+.arcdock-launcher {
+    background-color: rgba(18, 18, 22, 0.42);
+}
+
+/* Busca: a mesma pílula de vidro do painel, em escala menor. */
+.arcdock-launcher-search {
+    padding: 7px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.30);
+    background-color: rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.96);
+    caret-color: rgba(255, 255, 255, 0.9);
+    selection-background-color: rgba(255, 255, 255, 0.28);
+    selected-color: rgba(255, 255, 255, 0.98);
+    font-size: 13px;
+    box-shadow: 0 2px 10px 0 rgba(0, 0, 0, 0.25);
+}
+
+.arcdock-launcher-search:focus {
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    background-color: rgba(255, 255, 255, 0.22);
+}
+
+/* O hint_text do St.Entry é um StLabel filho — só o seletor descendente
+ * o alcança, e sem isto ele herdaria o branco cheio do texto digitado. */
+.arcdock-launcher-search StLabel {
+    color: rgba(255, 255, 255, 0.55);
+}
+
+.arcdock-launcher-search-icon {
+    icon-size: 16px;
+    color: rgba(255, 255, 255, 0.70);
+}
+
+/* Célula: transparente em repouso (o que aparece atrás do ícone é o
+ * wallpaper borrado, nunca uma caixa) e um realce discreto no hover e na
+ * seleção de teclado. transition-*: 0 pelo mesmo motivo de .arcdock-icon
+ * — quem anima o ícone é o Clutter, não o CSS. */
+.arcdock-launcher-cell,
+.arcdock-launcher-cell:hover,
+.arcdock-launcher-cell:active,
+.arcdock-launcher-cell:focus,
+.arcdock-launcher-cell:checked,
+.arcdock-launcher-cell:selected {
+    padding: 10px 8px;
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    background-gradient-direction: vertical;
+    background-gradient-start: transparent;
+    background-gradient-end: transparent;
+    border: none;
+    border-image: none;
+    border-radius: 18px;
+    box-shadow: none;
+    outline: none;
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+/* Nenhum realce de hover, de propósito: no Launchpad passar o mouse por
+ * cima de um app não pinta nada — o retângulo só existe para a seleção de
+ * TECLADO. Além de ser o comportamento do original, isso remove a única
+ * pintura que dependia de o St entregar o leave-event da célula: o realce
+ * que ficava aceso depois de o ponteiro ter ido embora. */
+.arcdock-launcher-cell-selected,
+.arcdock-launcher-cell-selected:hover {
+    background-color: rgba(255, 255, 255, 0.22);
+}
+
+/* Hover da célula: um anel branco em volta do ícone, e nada mais.
+ *
+ * A GEOMETRIA do anel (espessura, raio e tamanho) vem do JS, via
+ * set_style/set_size em appGridIcon.js, porque a mesma espessura decide o
+ * quanto o anel é deslocado para fora da caixa do ícone — mantê-la aqui
+ * seria uma segunda fonte de verdade para o mesmo número. Esta regra
+ * existe para o anel ter um seletor próprio caso um tema precise dele. */
+.arcdock-launcher-ring {
+    background: none;
+    background-color: transparent;
+}
+
+/* A sombra é o que mantém o nome legível quando o wallpaper borrado
+ * atrás dele é claro — sem ela, branco sobre branco some. */
+.arcdock-launcher-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.96);
+    text-align: center;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
+/* Hover do rótulo: negrito e ~1.2x do tamanho de repouso (12px -> 14px).
+ *
+ * O aumento é FONT-SIZE e não um scale_* do Clutter no actor: a sombra
+ * acima é pintada pelo St a partir de uma textura off-screen do rótulo, e
+ * sob um transform ela sai deslocada dos glifos — o resultado se lê como
+ * um segundo texto fantasma atrás do primeiro. Trocar o font-size não
+ * mexe na grade porque o rótulo tem largura E altura explícitas
+ * (appGridIcon.js); o texto maior apenas ellipsiza mais cedo. */
+.arcdock-launcher-label-hover {
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.arcdock-launcher-empty {
+    font-size: 15px;
+    color: rgba(255, 255, 255, 0.75);
+    text-align: center;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
+.arcdock-launcher-dots {
+    background-color: transparent;
+}
+
+/* O alvo de clique é o botão (com padding em volta); o círculo visível é
+ * o filho. Por isso o botão não pinta nada. */
+.arcdock-launcher-dot-button,
+.arcdock-launcher-dot-button:hover,
+.arcdock-launcher-dot-button:active,
+.arcdock-launcher-dot-button:focus {
+    padding: 5px;
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    border-radius: 999px;
+    box-shadow: none;
+    outline: none;
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+.arcdock-launcher-dot {
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.35);
+}
+
+.arcdock-launcher-dot-active {
+    background-color: rgba(255, 255, 255, 0.92);
+}
+
+/* ------------------------------------------------------------------
+ * Pastas do launcher (estilo Launchpad).
+ *
+ * Todas as superfícies daqui são da MESMA família de vidro da busca:
+ * branco translúcido sobre a tinta escura da grade, borda de um pixel em
+ * alpha baixo, uma sombra só. O que muda de peça para peça é a densidade
+ * — o painel aberto é o elemento em foco e ainda assim é o mais calmo,
+ * porque quem dá o destaque a ele é a camada que escurece a grade atrás,
+ * não um vidro mais aceso.
+ * ------------------------------------------------------------------ */
+
+/* Capa da pasta na célula da grade.
+ *
+ * A GEOMETRIA INTERNA (tamanho dos mini-ícones, respiro e vão da grade
+ * 3x3) vem toda do JS, em folderPreview.js: ela é derivada do lado do
+ * ladrilho e padding de CSS não é legível de volta. O que esta regra
+ * pinta é só a moldura.
+ *
+ * O RAIO é a exceção que fica aqui: quem desenha fundo e borda é esta
+ * regra, e um raio vindo por set_style daria duas fontes de verdade para
+ * a mesma moldura. 20px é ~22% do lado do ícone da grade
+ * (LAUNCHER.ICON = 88, constante, não é ajustável pelo usuário) — o
+ * quadrado arredondado do Launchpad, que não é círculo nem caixa. */
+.arcdock-launcher-folder-tile {
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background-color: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 2px 10px 0 rgba(0, 0, 0, 0.28);
+}
+
+/* Véu sobre a grade enquanto uma pasta está aberta: escurece o que está
+ * atrás sem apagá-lo. Preto e não branco porque o fundo da grade JÁ é uma
+ * tinta escura — clarear aqui levantaria o preto do launcher inteiro e a
+ * grade ficaria leitosa em vez de recuada. O alpha é o menor que ainda
+ * separa os dois planos: acima de ~0.5 os ícones de trás somem, e a pasta
+ * deixa de parecer aberta SOBRE a grade. */
+.arcdock-launcher-folder-shade {
+    background-color: rgba(10, 10, 14, 0.45);
+}
+
+/* Painel da pasta aberta: o mesmo vidro da busca, em cartão largo.
+ *
+ * Alpha um pouco MENOR que o da busca (0.16 -> 0.13) apesar de ser o
+ * elemento em foco: a área é muitas vezes maior, e a mesma densidade num
+ * cartão desse tamanho vira uma placa branca no meio da tela. O contraste
+ * vem do véu acima. A sombra é larga e suave — é ela que descola o cartão
+ * da grade escurecida. */
+.arcdock-launcher-folder-panel {
+    padding: 22px 24px;
+    border-radius: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    background-color: rgba(255, 255, 255, 0.13);
+    box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.42);
+}
+
+/* Bico do painel: um quadradinho que o JS gira 45° para virar triângulo.
+ *
+ * Fundo e borda são OS MESMOS do painel — qualquer diferença apareceria
+ * como um degrau logo acima da borda do cartão. A borda fica nos quatro
+ * lados porque só dois deles saem para fora do painel depois da rotação,
+ * e os outros dois ficam escondidos atrás do corpo do cartão: definir
+ * lados separados não mudaria o desenho e amarraria o CSS ao ângulo que o
+ * JS escolheu. O raio pequeno tira o fio de navalha da ponta, que é o
+ * único ponto onde o quadrado girado destoa do resto do cartão.
+ *
+ * Sem sombra, de propósito: a do painel é desenhada a partir do retângulo
+ * do painel, e uma segunda sombra aqui marcaria o contorno do quadrado
+ * inteiro, denunciando que o triângulo é um quadrado girado. */
+.arcdock-launcher-folder-arrow {
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    background-color: rgba(255, 255, 255, 0.13);
+}
+
+/* Nome da pasta em repouso. A sombra é a mesma família dos rótulos da
+ * grade, pela mesma razão: o vidro do painel deixa passar o wallpaper
+ * borrado, e sobre um papel de parede claro o branco sumiria.
+ *
+ * O padding e a borda TRANSPARENTE de um pixel não são decoração: eles
+ * copiam a caixa do .arcdock-launcher-folder-entry, para que trocar o
+ * rótulo pelo campo de edição não mexa na altura do painel (mesmo truque
+ * da borda transparente do .arcdock-panel-transparent). */
+.arcdock-launcher-folder-title {
+    padding: 4px 12px;
+    border: 1px solid rgba(255, 255, 255, 0);
+    font-size: 17px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.96);
+    text-align: center;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
+/* O mesmo nome sendo editado. Métricas idênticas às do título acima (só
+ * a sombra sai: sobre a pílula translúcida ela vira borrão em volta dos
+ * glifos) e uma pílula discreta para o campo se anunciar como editável. O
+ * vocabulário de cursor e seleção é o da busca — é o único outro campo de
+ * texto do launcher, e os dois têm que se comportar igual. */
+.arcdock-launcher-folder-entry {
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    background-color: rgba(255, 255, 255, 0.14);
+    font-size: 17px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.96);
+    caret-color: rgba(255, 255, 255, 0.9);
+    selection-background-color: rgba(255, 255, 255, 0.28);
+    selected-color: rgba(255, 255, 255, 0.98);
+}
+
+.arcdock-launcher-folder-entry:focus {
+    border: 1px solid rgba(255, 255, 255, 0.52);
+    background-color: rgba(255, 255, 255, 0.20);
+}
+
+/* Realce de "soltar aqui cria uma pasta", pintado ATRÁS do ícone alvo.
+ *
+ * Mesma família de raio do ladrilho de pasta (22px = os 18px do
+ * .arcdock-launcher-cell mais o arredondamento extra do ícone, a mesma
+ * conta do anel de hover em appGridIcon.js): o realce prenuncia a capa
+ * que vai aparecer ali, e um raio de outra família leria como outra
+ * coisa. O anel é mais forte que o preenchimento porque é ele que separa
+ * "vai fundir com este" de "está só passando por cima". */
+.arcdock-launcher-merge-halo {
+    border-radius: 22px;
+    border: 2px solid rgba(255, 255, 255, 0.75);
+    background-color: rgba(255, 255, 255, 0.16);
+}
+
+/* A CASA onde um app da grade mora, pintada só durante um arraste: no
+ * buraco que o ícone no ar deixou para trás, e na casa para onde ele vai
+ * se o usuário soltar agora.
+ *
+ * Branco em alpha baixo e mais nada — sem borda, sem sombra: a casa é o
+ * fundo do gesto, não o assunto dele. O assunto é o ícone que está na
+ * mão, e qualquer contorno aqui competiria com ele. O RAIO vem do JS
+ * (é derivado da folga em volta da arte, ver gridSlot.js), pelo mesmo
+ * motivo do anel de hover e do realce de merge. */
+.arcdock-launcher-slot {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+/* A casa de DESTINO ganha um fio de borda sobre o mesmo preenchimento: as
+ * duas coexistem na tela (o buraco de origem fica aceso o gesto inteiro),
+ * e sem essa diferença mínima elas leriam como dois buracos em vez de
+ * "saiu daqui, vai para ali". */
+.arcdock-launcher-slot-target {
+    border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+/* Tema escuro do launcher: só OVERRIDES, alcançados por seletor
+ * descendente a partir da classe extra na raiz — mesmo esquema do
+ * .arcdock-panel-dark. Tinta mais densa e vidro mais discreto; o resto
+ * continua vindo das regras claras acima. */
+.arcdock-launcher.arcdock-launcher-dark {
+    background-color: rgba(8, 8, 11, 0.62);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-search {
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: rgba(255, 255, 255, 0.10);
+    box-shadow: 0 2px 10px 0 rgba(0, 0, 0, 0.40);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-search:focus {
+    border: 1px solid rgba(255, 255, 255, 0.38);
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-cell-selected,
+.arcdock-launcher-dark .arcdock-launcher-cell-selected:hover {
+    background-color: rgba(255, 255, 255, 0.17);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-dot {
+    background-color: rgba(255, 255, 255, 0.28);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-dot-active {
+    background-color: rgba(255, 255, 255, 0.85);
+}
+
+/* Pastas no tema escuro: só as superfícies de VIDRO mudam, pela mesma
+ * razão da busca — sobre a tinta mais densa o mesmo branco translúcido
+ * pesa mais. O véu escurece um pouco mais para continuar valendo sobre um
+ * fundo que já é escuro.
+ *
+ * Sem override para o título nem para a barra de inserção: o texto é
+ * branco nos dois temas (regra do bloco do launcher) e a barra é um
+ * marcador momentâneo que precisa do máximo de contraste em qualquer
+ * tema — apagá-la aqui seria perder legibilidade sem ganhar nada. */
+.arcdock-launcher-dark .arcdock-launcher-folder-tile {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background-color: rgba(255, 255, 255, 0.11);
+    box-shadow: 0 2px 10px 0 rgba(0, 0, 0, 0.40);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-folder-shade {
+    background-color: rgba(6, 6, 9, 0.55);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-folder-panel {
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background-color: rgba(255, 255, 255, 0.09);
+    box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.55);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-folder-arrow {
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background-color: rgba(255, 255, 255, 0.09);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-folder-entry {
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background-color: rgba(255, 255, 255, 0.09);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-folder-entry:focus {
+    border: 1px solid rgba(255, 255, 255, 0.38);
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+.arcdock-launcher-dark .arcdock-launcher-merge-halo {
+    border: 2px solid rgba(255, 255, 255, 0.62);
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* ------------------------------------------------------------------
+ * Hover do ícone: NENHUM fundo.
+ *
+ * O realce quadrado atrás do ícone (padrão do Windows 11, e o que estas
+ * regras pintavam) não existe no Dock do macOS e brigava com o vidro:
+ * sobre o painel claro, um branco translúcido forte o bastante para ler
+ * como "mais claro" já virava um quadrado aceso em volta de um ícone que
+ * é ele mesmo colorido. O feedback de hover aqui é o tooltip acima do
+ * ícone e, quando ligada, a magnificação — nada atrás dele.
+ *
+ * O stage fica sem fundo em TODOS os estados (ver .arcdock-icon-stage lá
+ * em cima); o botão já zera o dele no bloco de reset do topo do arquivo.
+ * ------------------------------------------------------------------ */
+
+/* Dock com a grade de apps aberta: só os ícones flutuando, como o Dock do
+ * macOS sobre o Launchpad. A classe é posta e tirada em src/dock.js
+ * (_setLauncherOpen); o borrão do .arcdock-blur-backdrop não está aqui
+ * porque quem o pinta é um Shell.BlurEffect — efeito de actor, apagado
+ * por opacidade do mesmo lado.
+ *
+ * Borda TRANSPARENTE em vez de `border: none`: a borda entra na altura
+ * pedida pelo painel, e trocá-la por nada mexeria 2px na geometria — o
+ * notify::height dispararia um _reposition() na ida e outro na volta,
+ * fazendo a dock pular ao abrir e ao fechar a grade.
+ *
+ * O seletor de três classes existe para ganhar do tema escuro
+ * (.arcdock-panel.arcdock-panel-dark, mesma especificidade do de duas)
+ * sem depender da ordem das regras no arquivo. */
+.arcdock-panel.arcdock-panel-transparent,
+.arcdock-panel.arcdock-panel-dark.arcdock-panel-transparent {
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    background-gradient-start: transparent;
+    background-gradient-end: transparent;
+    /* rgba(...,0) e não `transparent`: alpha zero é o mesmo desenho e
+     * passa por qualquer parser de cor do St (mesma escolha do
+     * .arcdock-menu-dot). */
+    border: 1px solid rgba(255, 255, 255, 0);
+    box-shadow: none;
+}
+
+/* ------------------------------------------------------------------
+ * Casa reservada do arraste na dock
+ *
+ * Mesma linguagem do quadrado do launcher (.arcdock-launcher-slot): um
+ * preenchimento chapado no lugar onde o ícone vai cair, mais um fio de
+ * borda quando aquela casa é o DESTINO e não o buraco de origem. O raio
+ * NÃO vem daqui — ele é derivado da folga em dockSlotOverlay.js, e
+ * duplicá-lo aqui criaria uma segunda fonte de verdade para o mesmo
+ * número.
+ *
+ * O tema não chega por seletor descendente: a camada é IRMÃ do painel
+ * (mora no glassHost), então .arcdock-panel-dark não a alcança — a classe
+ * do escuro é carimbada na criação, como no tooltip. E o preenchimento do
+ * tema claro é ESCURO: sobre o vidro claro, um branco translúcido não se
+ * lê como buraco, se lê como reflexo.
+ * ------------------------------------------------------------------ */
+
+.arcdock-slot {
+    background-color: rgba(0, 0, 0, 0.10);
+}
+
+.arcdock-slot-target {
+    border: 1px solid rgba(0, 0, 0, 0.20);
+}
+
+.arcdock-slot-dark {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.arcdock-slot-dark.arcdock-slot-target {
+    border: 1px solid rgba(255, 255, 255, 0.24);
+}
+
+/* Diálogo de propriedades: separa identidade, edição e metadados para que
+ * a leitura siga a ordem da tarefa em vez de parecer um bloco de texto. */
+.arcdock-properties {
+    spacing: 14px;
+    min-width: 390px;
+}
+
+.arcdock-properties-title {
+    font-size: 18px;
+    font-weight: 700;
+    padding-bottom: 2px;
+}
+
+.arcdock-properties-identity {
+    spacing: 14px;
+    padding: 2px 0 6px 0;
+}
+
+.arcdock-properties-icon {
+    width: 64px;
+    height: 64px;
+}
+
+.arcdock-properties-app-name {
+    font-size: 15px;
+    font-weight: 600;
+    padding-bottom: 3px;
+}
+
+.arcdock-properties-icon-button {
+    padding: 3px 0;
+    background-color: transparent;
+    color: -st-accent-color;
+    font-size: 13px;
+}
+
+.arcdock-properties-icon-button:hover,
+.arcdock-properties-icon-button:focus {
+    color: st-lighten(-st-accent-color, 12%);
+}
+
+.arcdock-properties-field-label,
+.arcdock-properties-section-label {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.arcdock-properties-section-label {
+    padding-top: 4px;
+}
+
+.arcdock-properties-entry {
+    min-height: 22px;
+}
+
+.arcdock-properties-entry:error {
+    border-color: #e66b6b;
+}
+
+.arcdock-properties-details {
+    spacing: 9px;
+    padding: 13px 14px;
+    border-radius: 12px;
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.arcdock-properties-detail-row {
+    spacing: 12px;
+}
+
+.arcdock-properties-detail-key {
+    width: 82px;
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 13px;
+}
+
+.arcdock-properties-detail-value {
+    width: 260px;
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 13px;
+}
+
+.arcdock-properties-status-running {
+    color: #73d18b;
+}
+
+.arcdock-icon-picker {
+    spacing: 10px;
+    width: 380px;
+}
+
+.arcdock-icon-picker-subtitle,
+.arcdock-icon-picker-status {
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 12px;
+}
+
+.arcdock-icon-picker-search {
+    margin-top: 4px;
+}
+
+.arcdock-icon-picker-scroll {
+    height: 330px;
+    padding: 8px 18px 8px 4px;
+}
+
+.arcdock-icon-picker-grid {
+    width: 312px;
+}
+
+.arcdock-icon-picker-item {
+    width: 56px;
+    height: 56px;
+    padding: 8px;
+    border-radius: 12px;
+    background-color: transparent;
+}
+
+.arcdock-icon-picker-item:hover,
+.arcdock-icon-picker-item:focus {
+    background-color: rgba(255, 255, 255, 0.12);
+}

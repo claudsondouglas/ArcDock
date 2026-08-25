@@ -22,6 +22,7 @@ src/
 ├── folderIcon.js         — FolderIcon extends IconButton (filesystem folder, async I/O).
 ├── dockItemsStore.js     — DockItemsStore: ordered typed ids in GSettings + ItemType/makeId/parseId.
 ├── recentAppsHistory.js  — RecentAppsHistory: "recently opened" queue in GSettings (no signals).
+├── appUsageDatabase.js   — asynchronous bridge to ~/Documents/arc/apps.db (click/open telemetry).
 ├── showAppsIcon.js       — ShowAppsIcon (menu St.Button, opens overview).
 ├── appActionsMenu.js     — fillAppActionsSection(): "Nova janela" + .desktop actions, shared by both menus.
 ├── desktopShortcut.js    — DesktopShortcut: copies a .desktop to the desktop folder (async, +x, trusted).
@@ -107,6 +108,22 @@ between the apps and the folders (see **Panel sections**), behind the `show-rece
   `_iconOrder`, out of the persisted order and out of drops (`_isReorderable` requires the source
   id to be in `_iconOrder`).
 
+### App usage database
+
+`AppUsageDatabase` records icon activations from both the dock and built-in launcher, plus the
+same RUNNING transitions that feed `RecentAppsHistory`. The data lives in
+`~/Documents/arc/apps.db`: `apps` is the aggregate, while `app_clicks` and `app_opens` retain the
+events. GNOME Shell has no SQLite GI binding on the target system, so the JS bridge launches
+`scripts/app_usage_db.py` asynchronously; the helper owns schema creation, WAL transactions and
+parameter binding. A single instance owned by the extension serializes events through an async
+queue, so dock rebuilds and rapid clicks cannot race each other. Never execute database work
+synchronously on the compositor thread.
+
+The extension object exposes `recordExternalAppClick(appId, appName, source)` for sibling
+extensions. The public boundary accepts primitive strings only and forwards to the same queue;
+callers never receive the database object. ArcDesk uses `source = 'arcdesk'` and resolves the
+active ArcDock extension afresh for every activation.
+
 ### Running indicator
 
 `DockIcon` keeps the indicator in its own fixed-layout container inside `host` (never inside
@@ -169,6 +186,24 @@ step at the falloff edge and no jitter when the pointer crosses an icon.
   wider while magnifying, and following the outermost icon with the pointer would otherwise fall
   outside the live area and schedule the auto-hide. Vertically nothing changes — the effect only
   exists while the pointer is over the panel, which is inside the rect.
+
+### Tooltips
+
+The hover bubble is behind `show-tooltips` (default on), and the flag lives as **module state in
+`iconAnimation.js`** — same shape and same reason as `tooltipTheme`: there is one dock per session
+and the bubble is created inside that module, so neither `IconButton` nor its subclasses have to
+carry the preference just to hand it down.
+
+- **This key does not restart the dock.** Every other preference goes through
+  `ArcDockExtension._restartDock()`, but showing the bubble is a gate inside `_showTooltip()`:
+  `Dock`'s constructor calls `setTooltipsEnabled()` and connects `changed::show-tooltips`, and the
+  change lands on the next hover without recreating a single icon.
+- **Turning it off closes a bubble that is already up.** `tooltipOwner` is the one button currently
+  showing one (only one icon is hovered at a time). Without it a `gsettings set` from a terminal —
+  or a toggle on another monitor — would leave the bubble painted over the desktop until the next
+  hover, because it lives in the `uiGroup` and not in the button's tree.
+- Nothing else about hover changes: the cursor still turns into a pointer, the icon still
+  highlights and presses, and the hover watchdog still runs.
 
 ### Click to minimize
 
@@ -731,7 +766,7 @@ network mount freezes the whole session. Use `*_async` with a `Gio.Cancellable`,
 | `INDICATOR.MAX_DOTS` | 4 | cap on per-window dots (above it nobody counts at a glance) |
 | `INDICATOR.BAR_HEIGHT` / `BAR_WIDTH_RATIO` | 3 / 0.45 | bar style: height in px, width as a fraction of the icon |
 | `INDICATOR.CENTER_Y_OFFSET` | 0.5 | vertical center of the indicator, measured from the icon's bottom edge |
-| `RECENT.VISIBLE` / `HISTORY_MAX` | 3 / 10 | recent apps shown next to the Applications button, and how many the history remembers |
+| `RECENT.VISIBLE` / `HISTORY_MAX` | 6 / 10 | recent apps shown next to the Applications button, and how many the history remembers |
 | `MAGNIFICATION.MIN_SCALE` / `MAX_SCALE` / `DEFAULT_SCALE` | 1.1 / 2.0 / 1.5 | hover zoom limits; must match the `<range>` of `magnification-scale` |
 | `MAGNIFICATION.MIN_FALLOFF` / `MAX_FALLOFF` / `DEFAULT_FALLOFF` | 50 / 400 / 150 | px from the pointer where the zoom dies out; must match `magnification-falloff` |
 | `MAGNIFICATION.RELAX_MS` | 150 | the only eased part of the zoom: the way back when the pointer leaves |

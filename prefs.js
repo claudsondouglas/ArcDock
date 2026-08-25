@@ -207,6 +207,24 @@ export default class ArcDockPreferences extends ExtensionPreferences {
     minimizeRow.add_suffix(minimizeSwitch);
     minimizeRow.activatable_widget = minimizeSwitch;
 
+    const tooltipsRow = new Adw.ActionRow({
+      title: "Show tooltips",
+      subtitle:
+        "Show the name of the app or folder in a bubble above the icon while the pointer is over it.",
+    });
+    behaviorGroup.add(tooltipsRow);
+
+    const tooltipsSwitch = new Gtk.Switch({
+      active: settings.get_boolean("show-tooltips"),
+      valign: Gtk.Align.CENTER,
+    });
+    tooltipsSwitch.connect("notify::active", () => {
+      if (settings.get_boolean("show-tooltips") !== tooltipsSwitch.active)
+        settings.set_boolean("show-tooltips", tooltipsSwitch.active);
+    });
+    tooltipsRow.add_suffix(tooltipsSwitch);
+    tooltipsRow.activatable_widget = tooltipsSwitch;
+
     const windowAnimationsRow = new Adw.ActionRow({
       title: "Window animations",
       subtitle: "Open and minimize windows animate from the dock icon.",
@@ -270,7 +288,7 @@ export default class ArcDockPreferences extends ExtensionPreferences {
     const recentAppsRow = new Adw.ActionRow({
       title: "Show recent applications",
       subtitle:
-        "Keep the last three opened apps next to the Applications button.",
+        "Keep the last six opened apps next to the Applications button.",
     });
     behaviorGroup.add(recentAppsRow);
 

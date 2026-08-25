@@ -1,7 +1,5 @@
-import Clutter from "gi://Clutter";
 import Meta from "gi://Meta";
 import Shell from "gi://Shell";
-import St from "gi://St";
 
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
 import * as DND from "resource:///org/gnome/shell/ui/dnd.js";
@@ -34,6 +32,11 @@ import { WindowAnimations } from "./windowAnimations.js";
 import { FullscreenWatcher } from "./fullscreenWatcher.js";
 import { AppsLauncher } from "./appsLauncher/launcher.js";
 import {
+  addToArcDesk,
+  isOnArcDesk,
+  removeFromArcDesk,
+} from "./arcdeskBridge.js";
+import {
   DockItemsStore,
   ItemType,
   makeId,
@@ -41,9 +44,18 @@ import {
 } from "./dockItemsStore.js";
 import { RecentAppsHistory } from "./recentAppsHistory.js";
 import * as Cursor from "./cursor.js";
-import { applyGlass } from "./glassEffect.js";
-import { resetHoverPress, setTooltipTheme } from "./iconAnimation.js";
+import {
+  resetHoverPress,
+  setTooltipsEnabled,
+  setTooltipTheme,
+} from "./iconAnimation.js";
 import { AttentionTracker } from "./attentionTracker.js";
+import {
+  mergePersistedOrder,
+  moveWithinSection,
+  reconcileVisibleOrder,
+} from "./dock/itemOrder.js";
+import { DockView } from "./dock/view.js";
 
 export class Dock {
   constructor(params = {}) {
@@ -97,10 +109,11 @@ export class Dock {
       : 1;
     // O histórico é gravado SEMPRE, mesmo com a seção desligada: quem
     // religa a preferência encontra a seção já populada em vez de uma
-    // fila vazia esperando os próximos três apps.
+    // fila vazia esperando os próximos seis apps.
     this._recents = params.settings
       ? new RecentAppsHistory(params.settings)
       : null;
+    this._usageDatabase = params.usageDatabase ?? null;
     // Qualquer valor desconhecido (key de uma versão futura) cai no
     // claro: um tema não reconhecido não pode deixar a dock sem estilo.
     this._theme =
@@ -134,124 +147,37 @@ export class Dock {
     this._attentionTracker = new AttentionTracker();
     this._attentionTracker.addListener(() => this._notifyAttention());
 
-    this._container = new St.Bin({
-      x_align: Clutter.ActorAlign.CENTER,
-      y_align: Clutter.ActorAlign.END,
-      can_focus: false,
-      reactive: true,
+    this._view = new DockView({
+      iconSize: this._size.ICON,
+      theme: this._theme,
+      createDropDelegate: (box) => this._dropDelegate(box),
+      onEmptyPixelRelease: () => this._appsLauncher?.close(),
     });
-    // Defesa: se um clique cair na área do container mas não acertar
-    // nenhum filho reactive (ex: pixel "vazio" do headroom), consumimos
-    // o evento aqui pra que ele não vaze pra janela atrás do dock.
-    // Só consumimos o evento quando ele nasceu no próprio container (o
-    // pixel "vazio" do headroom). Se nasceu num filho, precisa propagar:
-    // no GNOME 49+ o St.Button detecta clique via ClutterClickGesture, e
-    // um EVENT_STOP vindo do ancestral cancela o gesture antes de virar
-    // 'clicked' — o que deixava todo o dock sem resposta ao botão 1.
-    const stopIfOwnPixel = (actor, event) => {
-      const onSelf = event.get_source?.() === actor;
-      return onSelf ? Clutter.EVENT_STOP : Clutter.EVENT_PROPAGATE;
-    };
-    this._container.connect("button-press-event", stopIfOwnPixel);
-    // No release, esse mesmo pixel vazio também FECHA a grade de apps
-    // quando ela está aberta: o container tem a largura inteira do
-    // monitor, então a faixa ao lado da pílula é "fora da dock" para
-    // qualquer efeito — e o gesto de fechar clicando fora não pode morrer
-    // só porque o clique caiu nessa faixa em vez de no overlay. O
-    // EVENT_STOP continua valendo: o clique não pode vazar para a janela
-    // atrás.
-    this._container.connect("button-release-event", (actor, event) => {
-      if (stopIfOwnPixel(actor, event) === Clutter.EVENT_PROPAGATE)
-        return Clutter.EVENT_PROPAGATE;
-      this._appsLauncher?.close();
-      return Clutter.EVENT_STOP;
-    });
+    // Aliases temporários mantêm o restante da fachada estável enquanto as
+    // próximas fronteiras (drag, conteúdo e geometria) são extraídas.
+    this._container = this._view.container;
+    this._panel = this._view.panel;
+    this._blurBackdrop = this._view.blurBackdrop;
+    this._appsBox = this._view.appsBox;
+    this._recentsBox = this._view.recentsBox;
+    this._foldersBox = this._view.foldersBox;
+    this._recentsSeparator = this._view.recentsSeparator;
+    this._foldersSeparator = this._view.foldersSeparator;
 
-    this._panel = new St.BoxLayout({
-      style_class: "arcdock-panel",
-      vertical: false,
-      reactive: true,
-      track_hover: true,
-    });
-    // O tema escuro é só uma classe A MAIS no painel: o CSS do claro
-    // continua valendo e o escuro entra como override, inclusive para os
-    // filhos (dots, barra, badge) via seletor descendente. Ver
-    // stylesheet.css. Quem NÃO é filho do painel — o tooltip e a casa
-    // reservada do arraste — recebe a classe do tema na criação.
-    if (this._theme === DockTheme.DARK)
-      this._panel.add_style_class_name("arcdock-panel-dark");
     // O tooltip é adicionado ao uiGroup, não ao painel — nenhum seletor
     // descendente o alcança, então o tema vai por aqui (ver iconAnimation).
     setTooltipTheme(this._theme);
-
-    // O blur vive num actor próprio ATRÁS do painel, recuado BLUR_INSET
-    // em todos os lados (ver config.js): como Shell.BlurEffect pinta um
-    // retângulo e ignora o border-radius, aplicá-lo direto no painel
-    // fazia o borrão escapar pelos cantos e desenhar um quadrado atrás
-    // da dock. Recuado, o retângulo do blur cabe inteiro dentro do
-    // contorno arredondado e nada aparece para fora dele.
-    this._blurBackdrop = new St.Widget({
-      style_class: "arcdock-blur-backdrop",
-      reactive: false,
-      x_align: Clutter.ActorAlign.CENTER,
-      y_align: Clutter.ActorAlign.CENTER,
-    });
-    applyGlass(this._blurBackdrop);
-
-    // O alinhamento vai NO FILHO, não no St.Bin: desde o St-18 (GNOME 49)
-    // StBin não tem mais as properties x-align/y-align, então o
-    // `y_align: END` do container caía no Clutter.Actor do PRÓPRIO Bin —
-    // um chrome de posição fixa, onde não significa nada. O glassHost
-    // ficava sem âncora e o headroom reservado para o tooltip/magnificação
-    // (totalH − altura do painel) sobrava EMBAIXO da pílula, não em cima:
-    // é isso, e não o BOTTOM_MARGIN, que abria a distância até a borda
-    // da tela. Com END o painel encosta no fundo do container, que
-    // _reposition() já coloca a BOTTOM_MARGIN do fim do monitor — a
-    // mesma geometria que _liveRect() e _iconRectForWindow() assumem.
-    const glassHost = new St.Widget({
-      layout_manager: new Clutter.BinLayout(),
-      reactive: false,
-      x_align: Clutter.ActorAlign.CENTER,
-      y_align: Clutter.ActorAlign.END,
-    });
-    glassHost.add_child(this._blurBackdrop);
-    glassHost.add_child(this._panel);
-    this._container.set_child(glassHost);
-
-    // Três seções, na ordem do macOS:
-    //
-    //   apps (fixados ou rodando) | recentes | pastas + botão Applications
-    //
-    // O botão é o FIM da dock, não uma seção própria: fica colado nas
-    // pastas e nunca ganha divisor. Cada divisor só aparece quando há
-    // conteúdo dos dois lados (ver _syncContentVisibility), então sem
-    // recentes a fila vira "apps | pastas + botão" e sem pastas
-    // "apps + botão".
-    //
-    // Apps e pastas são caixas SEPARADAS, e não uma só ordenada por
-    // _iconOrder, porque a seção de recentes entra no meio delas — um
-    // único BoxLayout não tem como abrir espaço aí. _iconOrder continua
-    // sendo uma lista só (é a ordem persistida no store) e cada caixa
-    // consome dela apenas os ids do seu tipo.
-    this._appsBox = new St.BoxLayout({ vertical: false });
-    this._appsBox._delegate = this._dropDelegate(this._appsBox);
-    this._panel.add_child(this._appsBox);
-
-    this._recentsSeparator = this._createSeparator();
-    this._panel.add_child(this._recentsSeparator);
-
-    // Os recentes não recebem `_delegate`: são voláteis, não estão em
-    // _iconOrder e não têm posição para guardar, então nada pode ser
-    // solto aqui.
-    this._recentsBox = new St.BoxLayout({ vertical: false, visible: false });
-    this._panel.add_child(this._recentsBox);
-
-    this._foldersSeparator = this._createSeparator();
-    this._panel.add_child(this._foldersSeparator);
-
-    this._foldersBox = new St.BoxLayout({ vertical: false, visible: false });
-    this._foldersBox._delegate = this._dropDelegate(this._foldersBox);
-    this._panel.add_child(this._foldersBox);
+    // Balão do hover: ligar/desligar é só um portão na hora de mostrar,
+    // então esta key NÃO derruba a dock como as outras — o listener aqui
+    // aplica a troca na hora, sem recriar um ícone sequer. O valor é
+    // reaplicado em todo construtor porque o estado vive no módulo, e o
+    // cache de módulo ESM do Shell sobrevive a um disable/enable.
+    setTooltipsEnabled(params.settings?.get_boolean("show-tooltips") ?? true);
+    if (params.settings) {
+      this._signals.connect(params.settings, "changed::show-tooltips", () =>
+        setTooltipsEnabled(params.settings.get_boolean("show-tooltips")),
+      );
+    }
 
     // Maquinário do arraste, no mesmo modelo da grade de apps: a casa
     // reservada acesa, os vizinhos abrindo espaço por translação e o
@@ -262,7 +188,7 @@ export class Dock {
     // ver dockSlotOverlay.js: o constraint que o gruda na caixa da seção
     // lê a alocação dela no momento em que a camada é alocada, e filhos
     // são alocados na ordem da árvore.
-    this._slotOverlay = new DockSlotOverlay(glassHost, {
+    this._slotOverlay = new DockSlotOverlay(this._view.glassHost, {
       iconSize: this._size.ICON,
       theme: this._theme,
     });
@@ -311,6 +237,19 @@ export class Dock {
             // supressão do eco das próprias escritas (ver _persistOrder).
             isAppPinned: (appId) => this._isAppPinned(appId),
             onTogglePinned: (appId) => this._toggleAppPinnedById(appId),
+            // "Adicionar à área de trabalho" também passa por aqui, e não
+            // pela ponte direto no launcher, porque quem sabe montar o id
+            // tipado (`app:<desktop-id>`) a partir de um desktop-id é a
+            // dock. A presença do ArcDesk é reconferida dentro da ponte, a
+            // cada chamada — nada é guardado entre uma abertura e outra.
+            isOnDesk: (appId) => isOnArcDesk(this._appIconId(appId)),
+            toggleOnDesk: (appId) => {
+              const id = this._appIconId(appId);
+              if (isOnArcDesk(id)) removeFromArcDesk(id);
+              else addToArcDesk(id);
+            },
+            onAppActivated: (app) =>
+              this._usageDatabase?.recordClick(app, "launcher"),
           })
         : null;
 
@@ -322,12 +261,7 @@ export class Dock {
         ? { onActivate: () => this._appsLauncher.toggle() }
         : {}),
     });
-    this._panel.add_child(this._showAppsIcon);
-    // O ícone é sempre criado — assim _suppressHover/_resumeHover/destroy
-    // seguem sem condicionais — e apenas escondido quando a preferência
-    // está desligada: St.BoxLayout não aloca filhos invisíveis, então ele
-    // também não ocupa espaço no painel.
-    this._showAppsIcon.visible = this._showAppsButton;
+    this._view.addShowAppsIcon(this._showAppsIcon, this._showAppsButton);
 
     if (this._magnificationParams?.enabled) {
       this._magnification = new Magnification(
@@ -340,10 +274,7 @@ export class Dock {
       );
     }
 
-    Main.layoutManager.addChrome(this._container, {
-      affectsStruts: false,
-      trackFullscreen: false,
-    });
+    this._view.mount();
 
     this._inputCatcher = new InputCatcher(() => this._autoHide.hideNow());
 
@@ -482,6 +413,7 @@ export class Dock {
     this._items = null;
     safe(() => this._recents?.destroy());
     this._recents = null;
+    this._usageDatabase = null;
     for (const icon of this._icons.values()) safe(() => icon.destroy());
     this._icons.clear();
     for (const icon of this._recentIcons.values()) safe(() => icon.destroy());
@@ -494,12 +426,8 @@ export class Dock {
     this._attentionTracker = null;
     safe(() => this._inputCatcher?.destroy());
     this._inputCatcher = null;
-    safe(() => {
-      if (this._container) {
-        Main.layoutManager.removeChrome(this._container);
-        this._container.destroy();
-      }
-    });
+    safe(() => this._view?.destroy());
+    this._view = null;
     this._container = null;
     // Destruídos junto com o container (subtree), só soltamos a referência.
     this._blurBackdrop = null;
@@ -642,7 +570,9 @@ export class Dock {
   _recordRecentApp(app) {
     if (!app || app.state !== Shell.AppState.RUNNING) return;
     const appId = app.get_id();
-    if (appId) this._recents?.push(appId);
+    if (!appId) return;
+    this._recents?.push(appId);
+    this._usageDatabase?.recordOpened(app);
   }
 
   /**
@@ -722,32 +652,11 @@ export class Dock {
           : INDICATOR.DOT_SIZE_LIGHT,
       clickToMinimize: this._clickToMinimize,
       onTogglePinned: (source) => this._togglePinned(source.app),
+      onAppActivated: (app) =>
+        this._usageDatabase?.recordClick(app, "dock"),
       onMenuStateChanged: (isOpen) => this._onIconMenuStateChanged(isOpen),
       attentionTracker: this._attentionTracker,
     });
-  }
-
-  /**
-   * O fio vertical que separa duas seções do painel. Nasce invisível:
-   * quem decide é _syncContentVisibility(), e só há o que separar quando
-   * as duas seções vizinhas têm conteúdo.
-   */
-  _createSeparator() {
-    const separator = new St.Widget({
-      style_class: "arcdock-separator",
-      reactive: false,
-      width: RECENT.SEPARATOR_WIDTH,
-      height: Math.round(this._size.ICON * RECENT.SEPARATOR_HEIGHT_RATIO),
-      // Sem isto o BoxLayout estica o fio até a altura total da linha,
-      // que inclui o espaço do indicador de app rodando.
-      y_expand: false,
-      y_align: Clutter.ActorAlign.CENTER,
-      visible: false,
-    });
-    // translation_y e não margem: é um deslocamento de pintura, não muda
-    // a alocação nem a altura pedida pelo painel.
-    separator.translation_y = RECENT.SEPARATOR_Y_OFFSET;
-    return separator;
   }
 
   _createFolderIcon(entry) {
@@ -922,15 +831,7 @@ export class Dock {
     const hasFolders = folders > 0;
     const hasRecents = this._recentIcons.size > 0;
 
-    this._appsBox.visible = hasApps;
-    this._recentsBox.visible = hasRecents;
-    this._foldersBox.visible = hasFolders;
-    // Um divisor só existe entre duas seções COM conteúdo: sem nada à
-    // esquerda ele vira um fio solto na borda do painel, e sem nada à
-    // direita ele fica encostado no botão Applications separando o botão
-    // do nada.
-    this._recentsSeparator.visible = hasApps && hasRecents;
-    this._foldersSeparator.visible = hasFolders && (hasApps || hasRecents);
+    this._view.syncSectionVisibility({ hasApps, hasRecents, hasFolders });
     this._isEmpty =
       !hasApps && !hasRecents && !hasFolders && !this._showAppsButton;
     this._updateForceHidden();
@@ -952,35 +853,11 @@ export class Dock {
   // que o store conhece entram na posição que a ordem persistida lhes
   // dá em relação aos vizinhos já presentes; os voláteis vão para o fim.
   _syncOrder(currentIds) {
-    this._iconOrder = this._iconOrder.filter((id) => currentIds.has(id));
-    const inOrder = new Set(this._iconOrder);
-    const newIds = [...currentIds].filter((id) => !inOrder.has(id));
-    if (!newIds.length) return;
-
-    const storeIndex = new Map(
-      (this._items?.list() ?? []).map((id, idx) => [id, idx]),
+    this._iconOrder = reconcileVisibleOrder(
+      this._iconOrder,
+      currentIds,
+      this._items?.list() ?? [],
     );
-    const volatileIds = [];
-    const persistedIds = newIds
-      .filter((id) => storeIndex.has(id))
-      .sort((a, b) => storeIndex.get(a) - storeIndex.get(b));
-    for (const id of newIds) if (!storeIndex.has(id)) volatileIds.push(id);
-
-    for (const id of persistedIds) {
-      const myIdx = storeIndex.get(id);
-      let after = -1;
-      let before = -1;
-      this._iconOrder.forEach((other, i) => {
-        const otherIdx = storeIndex.get(other);
-        if (otherIdx === undefined) return;
-        if (otherIdx < myIdx) after = i;
-        else if (before === -1) before = i;
-      });
-      if (after !== -1) this._iconOrder.splice(after + 1, 0, id);
-      else if (before !== -1) this._iconOrder.splice(before, 0, id);
-      else this._iconOrder.push(id);
-    }
-    this._iconOrder.push(...volatileIds);
   }
 
   // Uma lista de ordem, duas caixas: _iconOrder mistura apps e pastas
@@ -1473,20 +1350,13 @@ export class Dock {
    * da seção — assim o item nunca atravessa a fronteira entre seções.
    */
   _reorder(sourceId, targetIndex, box) {
-    const fromIndex = this._iconOrder.indexOf(sourceId);
-    if (fromIndex === -1) return;
-    this._iconOrder.splice(fromIndex, 1);
-    // Depois do splice, como o próprio targetIndex: ele é a posição FINAL
-    // na ordem visível da seção, já sem o item que se moveu.
-    const sectionIds = this._iconOrder.filter(
-      (id) => this._boxForId(id) === box,
+    if (!this._iconOrder.includes(sourceId)) return;
+    this._iconOrder = moveWithinSection(
+      this._iconOrder,
+      sourceId,
+      targetIndex,
+      (id) => this._boxForId(id),
     );
-    let at;
-    if (!sectionIds.length) at = fromIndex; // era o único da seção
-    else if (targetIndex >= sectionIds.length)
-      at = this._iconOrder.indexOf(sectionIds[sectionIds.length - 1]) + 1;
-    else at = this._iconOrder.indexOf(sectionIds[targetIndex]);
-    this._iconOrder.splice(at, 0, sourceId);
     this._applyOrder();
     this._persistOrder();
   }
@@ -1499,17 +1369,7 @@ export class Dock {
   _persistOrder() {
     if (!this._items) return;
     const storeIds = this._items.list();
-    const inStore = new Set(storeIds);
-    const reordered = this._iconOrder.filter((id) => inStore.has(id));
-    if (reordered.length < 2) return;
-
-    // Os slots permutados são exatamente as posições ocupadas por ids de
-    // `reordered`, então a contagem casa por construção.
-    const permuted = new Set(reordered);
-    let next = 0;
-    const merged = storeIds.map((id) =>
-      permuted.has(id) ? reordered[next++] : id,
-    );
+    const merged = mergePersistedOrder(storeIds, this._iconOrder);
     if (this._serializeItems(merged) === this._serializeItems(storeIds)) return;
 
     this._pendingSelfWrite = this._serializeItems(merged);
@@ -1664,20 +1524,10 @@ export class Dock {
    */
   _setLauncherOpen(open) {
     this._launcherOpen = open;
-    if (this._panel) {
-      if (open) this._panel.add_style_class_name("arcdock-panel-transparent");
-      else this._panel.remove_style_class_name("arcdock-panel-transparent");
-    }
-    if (this._blurBackdrop) {
-      this._blurBackdrop.remove_all_transitions();
-      this._blurBackdrop.ease({
-        opacity: open ? 0 : 255,
-        duration: open ? LAUNCHER.OPEN_MS : LAUNCHER.CLOSE_MS,
-        mode: open
-          ? Clutter.AnimationMode.EASE_IN_QUAD
-          : Clutter.AnimationMode.EASE_OUT_QUAD,
-      });
-    }
+    this._view?.setLauncherOpen(open, {
+      openDuration: LAUNCHER.OPEN_MS,
+      closeDuration: LAUNCHER.CLOSE_MS,
+    });
     this._updateInputCatcher(this._hasVisibleWindowOnPrimary());
   }
 

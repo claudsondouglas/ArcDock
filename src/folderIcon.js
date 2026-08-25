@@ -9,6 +9,12 @@ import { IconButton } from './iconButton.js';
 import { triggerPressBounce } from './iconAnimation.js';
 import { SignalTracker } from './trackers.js';
 import { ItemType, makeId } from './dockItemsStore.js';
+import {
+    addToArcDesk,
+    isArcDeskActive,
+    isOnArcDesk,
+    removeFromArcDesk,
+} from './arcdeskBridge.js';
 
 // Quantos itens da pasta aparecem no menu antes do resumo "… mais N".
 const MENU_ITEM_CAP = 12;
@@ -20,6 +26,12 @@ const ENUMERATE_BATCH = 64;
 // exige ler a pasta inteira, e "inteira" pode significar 200k arquivos em
 // ~/Downloads de alguém. Acima disto paramos e o resumo vira "mais de N".
 const ENUMERATE_HARD_CAP = 512;
+
+// Prefixo do id desta pasta na área de trabalho do ArcDesk. Escrito à mão
+// e não com makeId(): o que a dock chama de `folder:` o ArcDesk chama de
+// `path:` (lá `folder:` é uma pasta VIRTUAL, um agrupamento de apps que não
+// existe no sistema de arquivos), então os dois nomes não podem se misturar.
+const DESK_PATH_PREFIX = 'path:';
 
 const INFO_ATTRS = 'standard::icon,standard::display-name';
 const CHILD_ATTRS = [
@@ -157,6 +169,13 @@ class FolderIcon extends IconButton {
         removeItem.connect('activate', () => this._onRemove?.(this));
         this.menu.addMenuItem(removeItem);
 
+        // Rótulo e visibilidade ficam para _populateMenu(): o ArcDesk é
+        // outra extensão e o usuário pode ligá-la ou desligá-la entre dois
+        // cliques, então nada aqui pode ser decidido na construção.
+        this._deskItem = new PopupMenu.PopupMenuItem('');
+        this._deskItem.connect('activate', () => this._toggleOnDesk());
+        this.menu.addMenuItem(this._deskItem);
+
         // Menu fechado = resultado da enumeração não interessa mais.
         this._signals.connect(this.menu, 'open-state-changed', (_menu, isOpen) => {
             if (!isOpen)
@@ -164,10 +183,43 @@ class FolderIcon extends IconButton {
         });
     }
 
+    /**
+     * Id desta pasta na área de trabalho, montado a cada uso e nunca
+     * guardado: setTarget() reaproveita o ícone para outro caminho.
+     */
+    _deskId() {
+        return this._path ? `${DESK_PATH_PREFIX}${this._path}` : null;
+    }
+
+    _updateDeskItem() {
+        if (!this._deskItem)
+            return;
+        const id = this._deskId();
+        // Relido a cada abertura, e não guardado: o ArcDesk pode ter sido
+        // ligado ou desligado depois que este ícone nasceu, e o item viraria
+        // um clique sem efeito — ou um rótulo mentiroso, se a pasta tivesse
+        // sido tirada da área de trabalho por lá.
+        this._deskItem.actor.visible = !!id && isArcDeskActive();
+        this._deskItem.label.text = id && isOnArcDesk(id)
+            ? 'Remover da área de trabalho'
+            : 'Adicionar à área de trabalho';
+    }
+
+    _toggleOnDesk() {
+        const id = this._deskId();
+        if (!id)
+            return;
+        if (isOnArcDesk(id))
+            removeFromArcDesk(id);
+        else
+            addToArcDesk(id);
+    }
+
     /* Chamado pela base imediatamente antes de menu.toggle(), então é
      * obrigatoriamente síncrono: entra placeholder e a enumeração real
      * corre por fora, preenchendo a seção quando (e se) voltar. */
     _populateMenu() {
+        this._updateDeskItem();
         this._cancelMenuIo();
         this._contentSection.removeAll();
         this._contentSection.addMenuItem(

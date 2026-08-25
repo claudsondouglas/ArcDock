@@ -1,3 +1,1485 @@
+/* GENERATED FILE — DO NOT EDIT.
+ *
+ * Written by ~/.local/share/arcsuite/sync.sh as:
+ *
+ *     stylesheet.css = common.css ++ local.css
+ *
+ * Edit ~/.local/share/arcsuite/common.css for anything shared across
+ * ArcDock / ArcBar / ArcTab / ArcDesk, or this extension's own local.css
+ * for anything that is only its own, and re-run sync.sh.
+ *
+ * Concatenation and not @import: St's parse_stylesheet() passes
+ * app_data = FALSE, so imported rules land at cascade origin 0 (user agent)
+ * instead of 6 (extension) and lose to a user theme's !important rules at
+ * origin 5. This file is committed — it is the shippable artifact.
+ */
+/* ArcSuite — shared design system for ArcDock, ArcBar, ArcTab and ArcDesk.
+ *
+ * This file is never loaded on its own. `sync.sh` writes each extension's
+ * `stylesheet.css` as `common.css` ++ `local.css`, and the Shell loads that
+ * single concatenated file.
+ *
+ * WHY CONCATENATION AND NOT `@import`
+ *
+ * Measured on this machine's GNOME 50.4: St's `parse_stylesheet()` passes
+ * `app_data = FALSE`, so everything pulled in through an import lands at
+ * cascade origin 0 (user agent) instead of origin 6 (extension). A user
+ * theme's normal rules sit at 2 and its `!important` rules at 5, so an
+ * imported rule loses to both — and `!important` on our side only lifts it
+ * to 3, which still loses. ArcBar's entire glass-menu block exists to
+ * out-rank MacTahoe-Light's `!important` declarations; through an import it
+ * would silently stop working. Concatenated rules keep the full origin-6
+ * boost and win against a hostile theme with no `!important` at all.
+ *
+ * Concatenation also buys two smaller things: the "an import must be the
+ * first line" constraint disappears, and so does the silent failure where a
+ * missing imported file blanks every rule with nothing in the journal.
+ *
+ * FATAL — any one of these makes St discard the WHOLE stylesheet (errcode 15)
+ * and the Shell force-disables the extension. `sync.sh` greps for them and
+ * refuses to write:
+ *
+ *   - custom properties (a property name with TWO leading hyphens). croco's
+ *     identifier tokenizer allows at most one leading hyphen, so such a name
+ *     can never tokenize and the parse aborts at that byte.
+ *   - CSS nesting — a rule block opened inside another rule block.
+ *   - a property name with a leading underscore.
+ *
+ * SILENTLY IGNORED — these parse without an error and then do nothing at
+ * all. Do not spend an afternoon on them a second time:
+ *
+ *   var()   calc()   hsl() / hsla()   8-digit hex #RRGGBBAA
+ *   @media  @supports  @keyframes  @font-face  :root
+ *   ::before  ::after  :not()  :nth-child()
+ *   the `+` and `~` combinators, [attr=val] selectors
+ *   any box-shadow after the first comma (St paints only the first)
+ *   opacity, transform
+ *
+ * WHAT EXISTS INSTEAD OF VARIABLES: `-st-accent-color`, `-st-accent-fg-color`,
+ * `st-mix()`, `st-lighten()`, `st-darken()`, `st-transparentize()` — all
+ * verified working on 50.4. Anything genuinely dynamic (a radius derived from
+ * the user's icon size, the width of a slot plate) goes through
+ * `actor.set_style()` from JS, never through a class here.
+ *
+ * HOW THIS FILE IS USED
+ *
+ * St has no variables, so THE CLASSES ARE THE TOKENS. They are stacked in JS:
+ *
+ *     style_class: 'arc-glass arc-rim arc-e5 arcdock-panel'
+ *
+ * Dark is ADDITIVE, never a swap: light is always the base and the `-dark`
+ * twin only overrides what has to change, so `'arc-glass arc-glass-dark'`
+ * inherits every light declaration the twin does not mention. Every token
+ * that can vary by theme has a twin — even where the twin has nothing to
+ * change — so the JS that stamps them can append `-dark` mechanically
+ * without a table of exceptions.
+ *
+ * WHAT IS DELIBERATELY ABSENT: panel radii (24 / 28 / 20), blur insets
+ * (16 / 19 / 14), cell paddings and slot plate radii. Every one of those
+ * mirrors a constant in some extension's `src/config.js`, and a value with
+ * two homes is a value that will drift. They live in `local.css`, next to a
+ * comment naming the constant they follow.
+ *
+ * The namespace is `arc-`, verified collision-free against the shipped
+ * GNOME 50 theme (light, dark and high-contrast) and against the installed
+ * user themes — the only near miss is ArcMenu's `.arcmenu-menu`, which has
+ * no hyphen after `arc`.
+ * ------------------------------------------------------------------ */
+
+
+/* ==================================================================
+ * ELEVAÇÃO — .arc-e0 … .arc-e7
+ *
+ * Uma escada de sombras, do rés do chão ao painel que flutua sozinho no
+ * meio da tela. Um degrau é escolhido pelo ALCANCE (o quanto a superfície
+ * se descola), não pelo tamanho dela: uma pastilha grande encostada no
+ * vidro continua sendo e1.
+ *
+ * UMA sombra por regra, sempre. O St pinta só a primeira de uma lista
+ * separada por vírgula, então uma segunda camada não é sutil — é código
+ * morto que engana quem lê.
+ *
+ * O gêmeo escuro sobe ~0.13 de alpha em cada degrau. O número não é
+ * arbitrário: é exatamente a diferença entre a sombra clara e a escura do
+ * `.arcdock-panel` (0.32 -> 0.45), que foi medida no vidro de verdade. O
+ * vidro escuro precisa desse tanto a mais porque ele tem que se descolar
+ * do fundo SEM ajuda do rim, que no tema escuro é quase invisível.
+ * ================================================================== */
+
+/* Rés do chão. Existe como degrau nomeado (em vez de "não ponha classe
+ * nenhuma") para o JS poder apagar uma elevação trocando de classe, e para
+ * o gêmeo escuro existir e a estampagem mecânica nunca cair no vazio. */
+.arc-e0 {
+    box-shadow: none;
+}
+
+.arc-e0-dark {
+    box-shadow: none;
+}
+
+/* Pastilha assentada sobre a arte que ela marca — o pip de app rodando, o
+ * contador no canto de um ícone. Não é para ler como sombra, é só o fio
+ * que impede a pastilha de se fundir com o desenho embaixo. */
+.arc-e1 {
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.14);
+}
+
+.arc-e1-dark {
+    box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.27);
+}
+
+/* Cartão pousado no vidro: a miniatura de uma janela, um ladrilho. */
+.arc-e2 {
+    box-shadow: 0 1px 4px 0 rgba(0, 0, 0, 0.18);
+}
+
+.arc-e2-dark {
+    box-shadow: 0 1px 4px 0 rgba(0, 0, 0, 0.31);
+}
+
+/* Chip erguido do vidro: a pílula de busca, a capa de uma pasta. Já é uma
+ * camada acima, não mais uma marca sobre a mesma. */
+.arc-e3 {
+    box-shadow: 0 2px 10px 0 rgba(0, 0, 0, 0.25);
+}
+
+.arc-e3-dark {
+    box-shadow: 0 2px 10px 0 rgba(0, 0, 0, 0.38);
+}
+
+/* Bolha passageira que nasce ancorada em outra coisa: o tooltip. Curta e
+ * larga o bastante para ler como "está por cima", sem o halo de um painel. */
+.arc-e4 {
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.28);
+}
+
+.arc-e4-dark {
+    box-shadow: 0 4px 12px 0 rgba(0, 0, 0, 0.41);
+}
+
+/* Painel ancorado numa borda da tela — a dock. É o degrau de referência:
+ * este par é o do `.arcdock-panel`, verbatim, e é dele que sai o +0.13 do
+ * resto da escada. O monitor segura um dos lados, então o halo pode ser
+ * mais contido do que o de um painel solto. */
+.arc-e5 {
+    box-shadow: 0 10px 32px 0 rgba(0, 0, 0, 0.32);
+}
+
+.arc-e5-dark {
+    box-shadow: 0 10px 32px 0 rgba(0, 0, 0, 0.45);
+}
+
+/* Painel que flutua sobre um chão JÁ escurecido (o painel de pasta sobre a
+ * grade com véu). Parte do descolamento vem do véu, então a sombra pode
+ * ser larga sem ser pesada. */
+.arc-e6 {
+    box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.38);
+}
+
+.arc-e6-dark {
+    box-shadow: 0 12px 40px 0 rgba(0, 0, 0, 0.51);
+}
+
+/* Painel solto no meio da tela, sem véu atrás e sem borda física por perto
+ * — o alternador. É o único caso em que nada além da sombra diz que aquilo
+ * está por cima do resto, e sem um halo largo ele parece recortado e
+ * colado no wallpaper. */
+.arc-e7 {
+    box-shadow: 0 24px 64px 0 rgba(0, 0, 0, 0.44);
+}
+
+.arc-e7-dark {
+    box-shadow: 0 24px 64px 0 rgba(0, 0, 0, 0.57);
+}
+
+
+/* ==================================================================
+ * O RIM HAIRLINE — a assinatura da suíte
+ *
+ * O rim translúcido tem TRÊS tons, não uma borda única:
+ *   1. Um fio claro no topo — a luz refratada pelo chanfro superior.
+ *   2. Rims laterais mais suaves — ligam o topo à base.
+ *   3. Uma base quase invisível — sombra interna do chanfro inferior.
+ *
+ * O St não tem `border-image` confiável e não pinta vários box-shadow numa
+ * regra só, mas aceita borda POR LADO — e isso basta para fingir o chanfro.
+ * Alphas altos nas laterais matam o efeito: passam a ler como MOLDURA, não
+ * como refração.
+ *
+ * `.arc-rim` e `.arc-rim-dark` são os valores que o `.arcdock-panel` e o
+ * `.arctab-panel` já declaram byte a byte iguais. Essa coincidência não é
+ * acidente: é a assinatura visual da suíte, e é por isso que ela mora aqui.
+ * ================================================================== */
+
+.arc-rim {
+    border-top: 1px solid rgba(255, 255, 255, 0.55);
+    border-left: 1px solid rgba(255, 255, 255, 0.38);
+    border-right: 1px solid rgba(255, 255, 255, 0.38);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+/* No dark mode do macOS o rim branco quase some: sobra um fio no topo
+ * pegando a luz e um sussurro nas laterais. Os alphas do tema claro aqui
+ * desenhariam uma moldura branca em volta do painel. */
+.arc-rim-dark {
+    border-top: 1px solid rgba(255, 255, 255, 0.22);
+    border-left: 1px solid rgba(255, 255, 255, 0.14);
+    border-right: 1px solid rgba(255, 255, 255, 0.14);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* O rim INVERTIDO, para uma superfície clara e quase opaca (os menus de
+ * vidro da ArcBar, a 0.92 de branco). Ali um fio branco simplesmente não
+ * existiria: quem desenha a borda é a SOMBRA, não o brilho. Por isso a
+ * ordem se inverte também — o topo é o que quase some (é onde a luz bate)
+ * e a base é a mais funda.
+ *
+ * Não tem gêmeo escuro: uma superfície clara quase opaca não vira escura
+ * mudando de tema, ela vira outra superfície — e aí o par certo é
+ * `.arc-rim-dark`. */
+.arc-rim-inset {
+    border-top: 1px solid rgba(0, 0, 0, 0.05);
+    border-left: 1px solid rgba(0, 0, 0, 0.09);
+    border-right: 1px solid rgba(0, 0, 0, 0.09);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.13);
+}
+
+
+/* ==================================================================
+ * BORDAS RESERVADAS — .arc-hold-1 / -2 / -3
+ *
+ * A borda entra na altura e na largura que o actor pede. Uma caixa que
+ * começa sem borda e ganha uma no hover ou na seleção MUDA DE TAMANHO no
+ * instante do estado: o texto dá um pulinho, os vizinhos são empurrados e,
+ * num painel que ouve `notify::height`, o pulo vira um reposicionamento de
+ * ida e outro de volta.
+ *
+ * Reservar o espaço com uma borda de alpha zero resolve, e é o mesmo truque
+ * que o `.arcdock-panel-transparent`, o `.arctab-tile` e as linhas de menu
+ * da ArcBar já usam cada um por conta própria.
+ *
+ * `rgba(..., 0)` e NÃO `transparent`: alpha zero desenha exatamente o mesmo
+ * nada e atravessa qualquer parser de cor do St — é a convenção nas três
+ * extensões e não há motivo para abrir exceção. O canal de cor é
+ * irrelevante a alpha zero; o branco aqui é só para as três regras ficarem
+ * iguais de ler.
+ *
+ * A espessura tem que bater com a do estado que vai chegar. Quando o JS
+ * também depende dela (TILE_INSET, CELL_BORDER, ROW_BORDER), o número está
+ * duplicado lá — e é por isso que esses comentários existem nos dois lados.
+ * ================================================================== */
+
+.arc-hold-1 {
+    border: 1px solid rgba(255, 255, 255, 0);
+}
+
+.arc-hold-2 {
+    border: 2px solid rgba(255, 255, 255, 0);
+}
+
+.arc-hold-3 {
+    border: 3px solid rgba(255, 255, 255, 0);
+}
+
+
+/* ==================================================================
+ * CORPOS DE VIDRO
+ *
+ * NENHUM deles traz raio nem padding. Os dois espelham constantes de
+ * `src/config.js` em cada extensão (PANEL_RADIUS, PANEL_PAD, MENU_RADIUS,
+ * BLUR_INSET), e o raio ainda serve de base para o recuo do retângulo do
+ * blur — repeti-lo aqui criaria uma segunda fonte de verdade para um
+ * número que o JS precisa ler.
+ *
+ * O borrão por trás de todos eles é o `Shell.BlurEffect` de
+ * `src/glassEffect.js`, não CSS: o St não conhece `backdrop-filter`.
+ * ================================================================== */
+
+/* O vidro padrão: bem mais translúcido que uma "milk glass". O frosted do
+ * macOS deixa o wallpaper atravessar e conta com o blur para manter o
+ * conteúdo legível por cima. O gradiente vertical suave é o que resta do
+ * highlight interno do topo. */
+.arc-glass {
+    background-gradient-direction: vertical;
+    background-gradient-start: rgba(255, 255, 255, 0.36);
+    background-gradient-end: rgba(255, 255, 255, 0.20);
+}
+
+/* Espelho do claro com mais corpo. Um vidro escuro com o alpha do claro
+ * não lê como ESCURO sobre um wallpaper claro — lê como cinza. */
+.arc-glass-dark {
+    background-gradient-start: rgba(28, 28, 32, 0.50);
+    background-gradient-end: rgba(22, 22, 26, 0.38);
+}
+
+/* Mais denso, para uma superfície que não tem nenhuma borda física por
+ * perto e precisa carregar o próprio contraste (o painel do alternador,
+ * solto no meio da tela). */
+.arc-glass-strong {
+    background-gradient-direction: vertical;
+    background-gradient-start: rgba(255, 255, 255, 0.48);
+    background-gradient-end: rgba(255, 255, 255, 0.32);
+}
+
+/* O cinza é mais claro que o do `.arc-glass-dark` de propósito: este vidro
+ * é o mais opaco dos dois, e no mesmo tom ele viraria um bloco preto em vez
+ * de vidro escuro. */
+.arc-glass-strong-dark {
+    background-gradient-start: rgba(58, 58, 66, 0.52);
+    background-gradient-end: rgba(46, 46, 54, 0.42);
+}
+
+/* Vidro quase opaco, CHAPADO e não em gradiente. O gradiente vertical é o
+ * resto de um highlight interno, e ele só lê como refração enquanto o tinte
+ * é fraco: num cinza a 0.92 a mesma variação vira mancha, um lado do menu
+ * mais sujo que o outro.
+ *
+ * O valor é o `.popup-menu-content` do MacTahoe-Light. Não é preguiça: os
+ * menus da ArcBar nascem da mesma barra que abre o menu de contexto da
+ * dock, e dois cinzas PARECIDOS lado a lado leem como erro, não como
+ * estilo.
+ *
+ * A 8% de transparência o blur já não é o que dá legibilidade, mas é o que
+ * impede o pouco que atravessa de virar sujeira dentro do cinza. */
+.arc-glass-solid {
+    background-gradient-direction: none;
+    background-color: rgba(245, 245, 245, 0.92);
+}
+
+/* Gêmeo simétrico do chapado. Nenhuma extensão o consome hoje — ele existe
+ * para que `-dark` continue valendo para TODO corpo de vidro e a
+ * estampagem em JS não precise de exceção. O tom acompanha o
+ * `.arc-glass-dark` (o mesmo azulado de 28/28/32), com o alpha do irmão
+ * claro. */
+.arc-glass-solid-dark {
+    background-gradient-direction: none;
+    background-color: rgba(30, 30, 34, 0.92);
+}
+
+/* TINTA de tela cheia por baixo de uma grade: é ela que torna a grade
+ * legível sobre QUALQUER wallpaper, e é por isso que os rótulos que moram
+ * em cima dela são brancos nos dois temas — o chão deles nunca é o papel do
+ * tema, é sempre esta tinta. O tema escuro muda a densidade da tinta, não a
+ * cor do texto. */
+.arc-scrim {
+    background-color: rgba(18, 18, 22, 0.42);
+}
+
+.arc-scrim-dark {
+    background-color: rgba(8, 8, 11, 0.62);
+}
+
+/* VÉU sobre um conteúdo que continua ali: escurece o que está atrás sem
+ * apagá-lo (a grade enquanto uma pasta está aberta). Preto e não branco
+ * porque o chão já é escuro — clarear aqui levantaria o preto inteiro e a
+ * grade ficaria leitosa em vez de recuada.
+ *
+ * 0.45 é o MENOR alpha que ainda separa os dois planos: acima de ~0.5 os
+ * ícones de trás somem e a pasta deixa de parecer aberta SOBRE a grade. */
+.arc-shade {
+    background-color: rgba(10, 10, 14, 0.45);
+}
+
+.arc-shade-dark {
+    background-color: rgba(6, 6, 9, 0.55);
+}
+
+/* O actor que carrega o `Shell.BlurEffect`, recuado para dentro do painel.
+ * Não pinta NADA por conta própria: existe só para o borrão ter um
+ * retângulo que caiba dentro dos cantos arredondados — o Shell.BlurEffect
+ * não conhece `border-radius` e vaza pelos cantos se não for recuado antes.
+ *
+ * O raio dele (PANEL_RADIUS menos BLUR_INSET) fica em `local.css`, junto do
+ * raio do painel de que ele é derivado.
+ *
+ * Sem gêmeo escuro: não há o que escurecer em algo que não pinta nada. */
+.arc-blur-host {
+    background-color: transparent;
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+
+/* ==================================================================
+ * RESETS
+ *
+ * O St resolve o estilo pelo NÓ, e um estado que a gente nunca mencionou
+ * continua valendo o que o tema do usuário mandar. Um `St.Button` sem estes
+ * blocos ganha o fundo de botão do MacTahoe em `:checked` ou `:outlined`
+ * mesmo que nunca tenhamos escrito uma linha sobre esses estados — e o bug
+ * só aparece no dia em que o usuário troca de tema.
+ *
+ * Por isso todo pseudo-estado está LISTADO, um por um, mesmo os que não
+ * existem no widget em questão. É verborrágico e é de propósito.
+ * ================================================================== */
+
+/* Zera a pintura de um botão em todos os estados. Sem raio e sem padding:
+ * os dois são geometria de cada extensão, e este bloco só apaga tinta. */
+.arc-u-reset,
+.arc-u-reset:hover,
+.arc-u-reset:active,
+.arc-u-reset:focus,
+.arc-u-reset:focus:hover,
+.arc-u-reset:checked,
+.arc-u-reset:checked:hover,
+.arc-u-reset:selected,
+.arc-u-reset:outlined,
+.arc-u-reset:insensitive {
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    background-gradient-direction: vertical;
+    background-gradient-start: transparent;
+    background-gradient-end: transparent;
+    border: none;
+    border-image: none;
+    box-shadow: none;
+    outline: none;
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+/* Textura de ícone. O que aparece atrás de um ícone é SEMPRE o vidro do
+ * painel (ou o chip do cartão que o contém), nunca uma caixa. Sem estados:
+ * uma textura não tem estado, quem tem é o botão em volta dela. */
+.arc-u-texture {
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+}
+
+/* Container que não pinta nada E não reivindica caixa: a raiz de um popup,
+ * um ScrollView, uma BoxLayout de agrupamento. Sem isto o fundo herda o
+ * cinza padrão de StWidget e a tela inteira escurece atrás do conteúdo,
+ * brigando com o blur do próprio painel; e o padding do tema cria uma
+ * segunda caixa dentro da primeira. */
+.arc-u-bare {
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+}
+
+/* Desliga a transição do St no actor. Não é economia: quando quem anima é
+ * o Clutter (`ease()` sobre escala, posição ou opacidade), uma transição
+ * CSS por cima faz o St tentar crossfadear o próprio gradiente/rim durante
+ * a animação, e o resultado é um segundo desenho arrastado atrás do
+ * primeiro. */
+.arc-u-no-anim {
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+
+/* ==================================================================
+ * FORMA
+ *
+ * Só os raios que NÃO têm dono em JS. Raios de painel (24 / 28 / 20) e
+ * recuos de blur (16 / 19 / 14) ficam de fora: cada um espelha uma
+ * constante de `src/config.js` e mora no `local.css` da extensão dona.
+ * ================================================================== */
+
+/* A pílula. 999px e não uma porcentagem: o St resolve o raio em pixels
+ * contra a caixa, e qualquer valor maior que metade do lado menor já dá o
+ * semicírculo — 999 é "o que for preciso" escrito de forma que atravessa
+ * qualquer parser. */
+.arc-r-pill {
+    border-radius: 999px;
+}
+
+/* Tira o fio de navalha da ponta de um quadrado girado 45° (o bico de um
+ * painel). Qualquer raio maior arredondaria a ponta a ponto de ela deixar
+ * de ler como triângulo. */
+.arc-r-3 {
+    border-radius: 3px;
+}
+
+/* Punho de barra de rolagem e outras peças de 6px de lado — metade do lado
+ * é o máximo antes de virar pílula. */
+.arc-r-6 {
+    border-radius: 6px;
+}
+
+/* Bolha pequena de texto: tooltip. */
+.arc-r-8 {
+    border-radius: 8px;
+}
+
+/* Realce em escala de TECLA — o alvo quadrado de um botão de barra, uma
+ * pastilha de contagem. */
+.arc-r-10 {
+    border-radius: 10px;
+}
+
+/* Linha de lista e de menu: o canto de 16px do cartão, reduzido para a
+ * escala de uma faixa de texto. */
+.arc-r-12 {
+    border-radius: 12px;
+}
+
+/* Chip afundado dentro do vidro (uma faixa de sub-navegação). */
+.arc-r-14 {
+    border-radius: 14px;
+}
+
+/* Cartão: a unidade média da suíte, o retângulo que envolve um conteúdo
+ * com respiro em volta. */
+.arc-r-16 {
+    border-radius: 16px;
+}
+
+/* Célula de grade — mais redonda que o cartão porque o que ela envolve é
+ * um ícone, que já é redondo por dentro. */
+.arc-r-18 {
+    border-radius: 18px;
+}
+
+/* Célula de grade MAIS o arredondamento extra do ícone: é o raio de um
+ * realce que se pinta ATRÁS do ícone e precisa acompanhar a arte, não a
+ * caixa. */
+.arc-r-22 {
+    border-radius: 22px;
+}
+
+
+/* ==================================================================
+ * MOVIMENTO
+ *
+ * O St lê a duração do nó NOVO. Numa troca de classe isso significa que a
+ * duração da regra BASE rege a SAÍDA do estado e a da regra do estado rege
+ * a ENTRADA — as duas precisam ser escritas, e normalmente iguais.
+ * ================================================================== */
+
+.arc-m-none {
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+/* 130ms. ArcBar e ArcTab já chegaram a este número por caminhos separados
+ * (o realce de linha de menu e o de seleção do alternador) e escreveram o
+ * mesmo valor byte a byte. É curto de propósito: qualquer coisa mais longa
+ * vira borracha atrasada debaixo de um Tab repetido ou de um mouse que
+ * atravessa uma lista. */
+.arc-m-fast {
+    transition-duration: 130ms;
+}
+
+/* Para o que muda de estado uma vez e fica: uma barra que some ao entrar na
+ * visão geral, um painel que troca de tema. Longo o bastante para ler como
+ * transição em vez de corte. */
+.arc-m-slow {
+    transition-duration: 250ms;
+}
+
+
+/* ==================================================================
+ * TIPOGRAFIA
+ *
+ * Tamanhos em PIXELS, nunca em `em`. O `em` de um filho de `#panel` é o que
+ * o tema do usuário decidir, e uma barra que muda de altura conforme o tema
+ * não é uma barra.
+ *
+ * CONFLITO RESOLVIDO: o título de linha de 13px era `bold` na ArcBar
+ * (`.arcbar-notification-row-title`, `.arcbar-volume-row-title`) e `500` na
+ * ArcTab (`.arctab-list-title`, `.arctab-tile-title`) — o mesmo papel, dois
+ * pesos. Ficou 500. É o peso que o resto da suíte já usa em todo texto de
+ * primeira linha (rótulo do launcher, legenda do alternador, rótulo do modo
+ * ícone, tooltip da dock: 500 em todos), e sobre vidro com blur o 700
+ * engrossa as hastes a ponto de a linha ler como CABEÇALHO em vez de
+ * título. 600 fica reservado para o que é de fato cabeçalho.
+ * ================================================================== */
+
+/* Dado conferido de relance, não lido: uma porcentagem, uma hora, uma
+ * contagem. */
+.arc-t-micro {
+    font-size: 11px;
+}
+
+/* Contexto e rótulo de grade. */
+.arc-t-small {
+    font-size: 12px;
+    font-weight: 500;
+}
+
+/* Título de linha — a linha que o olho lê primeiro numa faixa. */
+.arc-t-body {
+    font-size: 13px;
+    font-weight: 500;
+}
+
+/* Texto solto sobre o vidro cru, sem chip por baixo: a legenda de um
+ * painel. Um degrau acima do título de linha porque não tem caixa nenhuma
+ * ajudando a achá-lo. */
+.arc-t-title {
+    font-size: 14px;
+    font-weight: 500;
+}
+
+/* A ÚNICA linha de texto de um painel — quando não há mais nada escrito na
+ * tela, ela pode e deve ser maior. */
+.arc-t-lead {
+    font-size: 15px;
+    font-weight: 500;
+}
+
+/* Cabeçalho de verdade: o nome de uma pasta aberta. É o único lugar onde
+ * 600 se justifica, porque ali o texto É o assunto do painel. */
+.arc-t-head {
+    font-size: 17px;
+    font-weight: 600;
+}
+
+/* Sobe um texto de tamanho qualquer para peso de cabeçalho sem mexer no
+ * tamanho. Empilhável: `arc-t-body arc-t-strong`. */
+.arc-t-strong {
+    font-weight: 600;
+}
+
+/* O corte de verdade é o ellipsize do Pango, com largura explícita vinda do
+ * JS — sem ela um título de janela (texto arbitrário) vira a largura
+ * preferida do painel inteiro. Isto aqui cobre só o caso de o St medir
+ * antes do clutter_text. */
+.arc-t-ellipsis {
+    text-overflow: ellipsis;
+}
+
+/* A sombra que segura texto e ícone sobre ARTE — wallpaper borrado, uma
+ * miniatura, um ícone colorido. Sem ela, branco sobre um papel de parede
+ * claro simplesmente some.
+ *
+ * CONFLITO MENOR RESOLVIDO: ArcDock usa 0.65 (quatro regras) e ArcBar usa
+ * 0.60 (duas). Ficou 0.65 — é a maioria e é o valor medido sobre o pior
+ * caso, um wallpaper branco. `icon-shadow` entra junto porque um ícone
+ * colorido sobre fundo claro precisa exatamente da mesma borda desenhada
+ * pela sombra. */
+.arc-t-shadow {
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+    icon-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
+.arc-t-center {
+    text-align: center;
+}
+
+.arc-t-left {
+    text-align: left;
+}
+
+
+/* ==================================================================
+ * TINTA
+ *
+ * CONFLITO RESOLVIDO: a ArcTab escreve `rgba(20, 20, 24, ·)` e a ArcBar
+ * escreve `#242424` / `rgba(36, 36, 36, ·)` para exatamente o mesmo papel —
+ * texto escuro sobre vidro claro. Ficou `20, 20, 24`.
+ *
+ * O motivo não é gosto: TODO preto da suíte tem uma inclinação azulada
+ * (24/24/26 no tooltip da dock, 28/28/32 no contador da ArcTab, 18/18/22 na
+ * tinta do launcher, 10/10/14 no véu de pasta). O `#242424` é um cinza
+ * NEUTRO importado do MacTahoe-Light, e é o único ponto da suíte que não
+ * pertence a essa família — lado a lado com os outros ele lê como
+ * amarelado. Ele continua escrito à mão no `local.css` da ArcBar, onde
+ * existe para casar com o menu do tema; o que muda é qual dos dois é o
+ * TOKEN quando alguém precisar de tinta nova.
+ *
+ * O gêmeo escuro não é o mesmo preto com alpha invertido: é BRANCO. Sobre
+ * vidro escuro o branco cheio vibra e o texto parece maior que o corpo da
+ * fonte, então nem o degrau primário chega a 1.0.
+ * ================================================================== */
+
+/* Primária: o dado da linha. */
+.arc-ink {
+    color: rgba(20, 20, 24, 0.92);
+}
+
+.arc-ink-dark {
+    color: rgba(255, 255, 255, 0.94);
+}
+
+/* Secundária: contexto que acompanha o dado (o nome do app sob o título da
+ * janela, o corpo de uma notificação). */
+.arc-ink-2 {
+    color: rgba(20, 20, 24, 0.70);
+}
+
+.arc-ink-2-dark {
+    color: rgba(255, 255, 255, 0.72);
+}
+
+/* Terciária: metadado que se confere, não se lê — a hora, a porcentagem. */
+.arc-ink-3 {
+    color: rgba(20, 20, 24, 0.55);
+}
+
+/* Sobe 0.07 em relação ao claro: a 11px, sobre vidro escuro com blur forte,
+ * o cinza médio some antes do que sobre vidro claro. */
+.arc-ink-3-dark {
+    color: rgba(255, 255, 255, 0.62);
+}
+
+/* Dica/placeholder: precisa ler como "ainda não tem nada aqui", não como
+ * texto apagado. */
+.arc-ink-4 {
+    color: rgba(20, 20, 24, 0.42);
+}
+
+.arc-ink-4-dark {
+    color: rgba(255, 255, 255, 0.50);
+}
+
+/* Desabilitado. Separado do degrau 4 de propósito: uma dica é convite e um
+ * item insensível é recusa, e usar a mesma tinta para os dois faz o usuário
+ * clicar no que não vai responder. */
+.arc-ink-mute {
+    color: rgba(20, 20, 24, 0.45);
+}
+
+.arc-ink-mute-dark {
+    color: rgba(255, 255, 255, 0.45);
+}
+
+/* Tinta para texto que mora sobre ARTE e não sobre o papel do tema: um
+ * rótulo de grade em cima da tinta escura do launcher, o nome de uma pasta
+ * sobre o vidro que flutua nela. Branco nos DOIS temas, e por isso sem
+ * gêmeo: o chão desse texto nunca clareia, o que muda com o tema é a
+ * densidade da tinta atrás dele. Anda sempre com `.arc-t-shadow`. */
+.arc-ink-on-art {
+    color: rgba(255, 255, 255, 0.96);
+}
+
+
+/* ==================================================================
+ * VÉUS — o preenchimento de hover e de pressionado
+ *
+ * A DIREÇÃO do véu segue o CHÃO, não o gosto: sobre um chão escuro a linha
+ * ACENDE (véu branco), sobre um chão claro ela AFUNDA (véu preto). O mesmo
+ * véu branco que destaca uma linha sobre vidro fumê só lavaria o rótulo
+ * escuro que ele deveria destacar sobre vidro claro.
+ *
+ * Cada véu vem com a borda do par. Elas não são separáveis: o véu sozinho
+ * lê como mancha, e é o fio de borda que faz a faixa ler como uma peça que
+ * mudou de estado. Empilhe `.arc-hold-1` no estado de repouso para o texto
+ * não pular 1px quando a borda chegar.
+ *
+ * "-strong" é o estado PRESSIONADO, não um hover mais forte. Ele precisa
+ * ser visivelmente mais fundo que o hover ou o clique não tem retorno.
+ * ================================================================== */
+
+.arc-veil-up {
+    background-color: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.arc-veil-up-strong {
+    background-color: rgba(255, 255, 255, 0.20);
+    border: 1px solid rgba(255, 255, 255, 0.28);
+}
+
+.arc-veil-down {
+    background-color: rgba(0, 0, 0, 0.08);
+    border: 1px solid rgba(0, 0, 0, 0.10);
+}
+
+.arc-veil-down-strong {
+    background-color: rgba(0, 0, 0, 0.14);
+    border: 1px solid rgba(0, 0, 0, 0.16);
+}
+
+
+/* ==================================================================
+ * NÍVEL AFUNDADO
+ *
+ * Uma bandeja DENTRO do vidro: a faixa de sub-navegação que se abre com o
+ * Espaço no alternador, um campo que precisa ler como "um nível abaixo do
+ * painel". Alpha baixíssimo de propósito — o que anuncia o nível é a borda
+ * fechando o retângulo, não o escurecimento.
+ *
+ * Um realce que more DENTRO de um `.arc-sunken` tem que ser mais fraco que
+ * o mesmo realce no nível de cima: a hierarquia (nível de app > nível de
+ * janela) também precisa aparecer na força do véu, senão a bandeja inteira
+ * estoura de contraste.
+ * ================================================================== */
+
+.arc-sunken {
+    background-color: rgba(0, 0, 0, 0.05);
+    border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* Sobre vidro escuro um preto a 0.05 não afunda nada — some. Aqui quem
+ * desenha o nível é o brilho, mesma inversão do rim. */
+.arc-sunken-dark {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+
+/* ==================================================================
+ * ANEL DE DESTAQUE
+ *
+ * O realce de SELEÇÃO, e só dele: a seleção é a informação mais importante
+ * da tela, o usuário está martelando Tab ou setas e precisa achá-la de
+ * relance, sem ler a grade. Por isso ela é feita de COR e não de
+ * luminosidade — uma grade de miniaturas já é ruidosa e cheia de branco, e
+ * mais branco compete com o conteúdo, enquanto o azul não existe em nenhum
+ * outro ponto do painel e é encontrado sem leitura.
+ *
+ * O véu branco continua existindo, mas rebaixado: ele separa o conteúdo do
+ * vidro DENTRO do anel, não carrega o realce sozinho.
+ *
+ * O halo é AZUL e sem deslocamento vertical: é brilho em volta do anel, não
+ * sombra projetada — uma sombra preta sujaria a cor e o anel leria como
+ * cinza-azulado. É a única sombra da suíte que não vem da escada de
+ * elevação, exatamente porque não é elevação.
+ *
+ * POR QUE NÃO `-st-accent-color`: ele existe e funciona, e é justamente o
+ * problema — ele segue a cor de destaque que o usuário escolheu no GNOME. O
+ * trabalho inteiro deste anel é ser uma cor que não aparece em mais nada; um
+ * usuário com o acento no mesmo tom do wallpaper perderia a seleção. #007AFF
+ * / #0A84FF são os accents do macOS claro e escuro, e são fixos de propósito.
+ * ================================================================== */
+
+.arc-ring {
+    background-color: rgba(255, 255, 255, 0.26);
+    border: 3px solid rgba(0, 122, 255, 0.95);
+    box-shadow: 0 0 16px 0 rgba(0, 122, 255, 0.45);
+}
+
+/* #0A84FF é o accent do dark mode do macOS: o #007AFF do claro escurece
+ * demais contra vidro escuro e perde a leitura de "aceso". O véu branco cai
+ * (0.26 -> 0.14) porque o mesmo alpha do tema claro sobre este vidro estoura
+ * o contraste; o halo, ao contrário, SOBE — é ele que faz o anel parecer
+ * emitir luz sobre fundo escuro. */
+.arc-ring-dark {
+    background-color: rgba(255, 255, 255, 0.14);
+    border: 3px solid rgba(10, 132, 255, 1.0);
+    box-shadow: 0 0 18px 0 rgba(10, 132, 255, 0.55);
+}
+
+/* O mesmo anel em escala de LINHA. 2px e não 1: um fio de 1px de azul some
+ * sobre vidro. Abaixo disso não existe variante — se o realce não couber em
+ * 2px, o que não cabe é o realce por cor. */
+.arc-ring-thin {
+    background-color: rgba(255, 255, 255, 0.30);
+    border: 2px solid rgba(0, 122, 255, 0.95);
+    box-shadow: 0 0 12px 0 rgba(0, 122, 255, 0.35);
+}
+
+.arc-ring-thin-dark {
+    background-color: rgba(255, 255, 255, 0.16);
+    border: 2px solid rgba(10, 132, 255, 1.0);
+    box-shadow: 0 0 14px 0 rgba(10, 132, 255, 0.45);
+}
+
+
+/* ==================================================================
+ * PASTILHAS
+ *
+ * Uma pastilha é INFORMAÇÃO (uma contagem, um alerta), não decoração de
+ * vidro — e por isso NÃO varia com o tema. Ela pousa sobre a arte de um
+ * ícone, que pode ser clara ou escura independentemente do tema do painel,
+ * então quem garante o contraste é o anel branco em volta, não o fundo
+ * atrás dela.
+ *
+ * Sem raio: com um dígito a altura e a largura empatam e a pastilha sai
+ * redonda, com dois ela vira pílula sozinha — e a altura vem do JS, que
+ * encolhe a pastilha junto com o ícone. Empilhe `.arc-r-pill`.
+ * ================================================================== */
+
+.arc-chip {
+    background-color: rgba(20, 20, 24, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.75);
+    color: rgba(255, 255, 255, 0.98);
+    text-align: center;
+}
+
+/* Vermelho de alerta, igual nos dois temas — é um aviso, não estilo. Só o
+ * anel branco cede sobre vidro escuro (0.95 -> 0.75): no valor do claro ele
+ * pareceria um adesivo colado no ícone. Aqui o gêmeo escuro mexe SÓ na
+ * borda; o vermelho não se negocia. */
+.arc-chip-alert {
+    background-color: rgb(238, 64, 64);
+    border: 1.5px solid rgba(255, 255, 255, 0.95);
+}
+
+.arc-chip-alert-dark {
+    border: 1.5px solid rgba(255, 255, 255, 0.75);
+}
+
+/* Pastilha TRANSLÚCIDA, para uma contagem que mora sobre uma barra escura e
+ * opaca: ali não há arte por baixo, e um disco sólido leria como um botão a
+ * mais na fileira. */
+.arc-chip-soft {
+    background-color: rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.80);
+}
+
+
+/* ==================================================================
+ * CAMPO DE TEXTO
+ *
+ * Um chip um pouco mais opaco que o vidro em volta: precisa ler como um
+ * campo AFUNDADO dentro do vidro, não como mais uma camada do mesmo
+ * gradiente.
+ *
+ * Sem raio e sem padding — a forma (pílula ou cartão) e a folga interna são
+ * decisão de cada campo. Empilhe `.arc-r-pill`.
+ *
+ * `caret-color`, `selection-background-color` e `selected-color` estão aqui
+ * porque um campo que herda a seleção do tema do usuário fica com o azul do
+ * MacTahoe dentro de um vidro que não tem azul nenhum.
+ * ================================================================== */
+
+.arc-field {
+    background-color: rgba(255, 255, 255, 0.34);
+    /* Rim ESCURO e não branco: sobre o vidro claro (que já é bem branco por
+     * dentro) um rim branco desapareceria. Quem separa o campo aqui é a
+     * sombra, mesma lógica do `.arc-rim-inset`. */
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    color: rgba(20, 20, 24, 0.90);
+    caret-color: rgba(20, 20, 24, 0.80);
+    selection-background-color: rgba(0, 0, 0, 0.12);
+    selected-color: rgba(20, 20, 24, 0.95);
+}
+
+/* Sobre vidro escuro o rim BRANCO volta a fazer sentido: é ele que separa o
+ * campo, não uma sombra. */
+.arc-field-dark {
+    background-color: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    color: rgba(255, 255, 255, 0.92);
+    caret-color: rgba(255, 255, 255, 0.85);
+    selection-background-color: rgba(255, 255, 255, 0.22);
+    selected-color: rgba(255, 255, 255, 0.98);
+}
+
+.arc-field:focus {
+    background-color: rgba(255, 255, 255, 0.52);
+    border: 1px solid rgba(0, 0, 0, 0.14);
+}
+
+/* Duas classes, para ganhar de `.arc-field-dark` (também duas): sem este
+ * par, no tema escuro o realce claro perderia para a regra de tema, que é
+ * mais específica que a de estado. */
+.arc-field-dark:focus {
+    background-color: rgba(255, 255, 255, 0.20);
+    border: 1px solid rgba(255, 255, 255, 0.30);
+}
+
+/* O mesmo realce, disponível como CLASSE. Existe para os campos que nunca
+ * recebem foco de teclado de verdade (o campo de busca do alternador é só
+ * exibição — quem digita é o popup) e ainda assim precisam anunciar que
+ * viraram donos do teclado. Vem depois de `:focus` de propósito: mesma
+ * especificidade, e no St quem chega por último ganha. */
+.arc-field-active {
+    background-color: rgba(255, 255, 255, 0.52);
+    border: 1px solid rgba(0, 0, 0, 0.14);
+}
+
+.arc-field-dark.arc-field-active {
+    background-color: rgba(255, 255, 255, 0.20);
+    border: 1px solid rgba(255, 255, 255, 0.30);
+}
+
+/* A dica do campo. O `hint_text` do St.Entry é um StLabel FILHO, e só o
+ * seletor descendente o alcança — sem esta regra ele herdaria a tinta cheia
+ * do texto digitado e a dica leria como conteúdo já escrito. Seletor de
+ * elemento, não classe nova: a dica nativa não aceita `style_class`. Onde a
+ * dica é um StLabel próprio (o alternador monta o dele à mão), o consumidor
+ * empilha `.arc-ink-4` diretamente. */
+.arc-field StLabel {
+    color: rgba(20, 20, 24, 0.42);
+}
+
+.arc-field-dark StLabel {
+    color: rgba(255, 255, 255, 0.50);
+}
+
+
+/* ==================================================================
+ * BARRA DE ROLAGEM DE SOBREPOSIÇÃO
+ *
+ * Ela flutua sobre a última coluna de pixels da lista em vez de roubar
+ * largura do conteúdo (`overlay_scrollbars` no St.ScrollView). Sem estilo
+ * próprio herda a barra do tema do Shell — larga e com trilho pintado,
+ * desenhada para lista OPACA e não para vidro.
+ *
+ * Seletores de ELEMENTO (StScrollBar, StBin#trough, StButton#vhandle), o
+ * mesmo vocabulário do stylesheet do próprio Shell: nenhuma classe nova
+ * entra no contrato das extensões. Só a classe do HOSPEDEIRO é nossa.
+ *
+ * ArcBar e ArcTab já escreveram as três primeiras regras byte a byte
+ * iguais. Elas divergiam só na cor do punho (0,0,0 lá e 20,20,24 aqui), e
+ * isso caiu no conflito de tinta resolvido acima — ficou a base 20/20/24.
+ * ================================================================== */
+
+/* O ScrollView não pinta nada por si: quem dá o limite visual é o vidro em
+ * volta, e um fundo aqui criaria uma segunda caixa dentro da primeira. */
+.arc-scroll {
+    background-color: transparent;
+    border: none;
+    padding: 0;
+}
+
+.arc-scroll StScrollBar {
+    padding: 0;
+    width: 6px;
+}
+
+.arc-scroll StScrollBar StBin#trough {
+    background-color: transparent;
+    border: none;
+}
+
+.arc-scroll StScrollBar StButton#vhandle {
+    border-radius: 3px;
+    border: none;
+    background-color: rgba(20, 20, 24, 0.28);
+    margin: 2px;
+}
+
+.arc-scroll-dark StScrollBar StButton#vhandle {
+    background-color: rgba(255, 255, 255, 0.30);
+}
+
+
+/* ==================================================================
+ * SEPARADORES
+ *
+ * Sobre vidro CLARO o que separa é a sombra; sobre vidro ESCURO é o brilho.
+ * O alpha é o mesmo nos dois — a inversão é só de canal.
+ * ================================================================== */
+
+/* Divisor com corpo próprio, cuja largura e altura vêm do JS (a extensão
+ * precisa delas para centrar o fio). Só a tinta e a ponta arredondada
+ * ficam aqui. */
+.arc-sep {
+    background-color: rgba(0, 0, 0, 0.20);
+    border-radius: 999px;
+}
+
+.arc-sep-dark {
+    background-color: rgba(255, 255, 255, 0.20);
+}
+
+/* Fio de um pixel entre seções de uma lista. Bem mais discreto que o
+ * divisor acima porque aqui quem faz o trabalho de separar é a MARGEM em
+ * volta; o fio só confirma. */
+.arc-sep-hair {
+    height: 1px;
+    background-color: rgba(0, 0, 0, 0.12);
+}
+
+.arc-sep-hair-dark {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+
+/* ==================================================================
+ * GRADE E PASTAS
+ *
+ * Consumido pelo launcher da ArcDock (estilo Launchpad) E pela área de
+ * trabalho da ArcDesk. As duas desenham a mesma coisa: ícones numa grade,
+ * pastas que se abrem num painel, e um arraste que precisa dizer para onde
+ * o ícone vai cair.
+ *
+ * NENHUMA destas regras traz raio nem padding de célula. Na ArcDock o ícone
+ * da grade tem lado FIXO (LAUNCHER.ICON = 88), mas na ArcDesk ele é
+ * ajustável pelo usuário de 32 a 128px — um raio de 20px é um quadrado
+ * arredondado num ícone de 88 e quase um círculo num de 32. Tudo que é
+ * derivado do tamanho do ícone vai por `actor.set_style()` do JS, que é
+ * onde o tamanho é conhecido.
+ * ================================================================== */
+
+/* A célula em REPOUSO: transparente em todos os estados. O que aparece
+ * atrás do ícone é o wallpaper (borrado, no launcher; cru, na área de
+ * trabalho) — nunca uma caixa.
+ *
+ * Sem realce de hover, de propósito: no Launchpad passar o mouse por cima
+ * de um app não pinta nada. Além de ser o comportamento da referência, isso
+ * remove a única pintura que dependia de o St entregar o leave-event da
+ * célula — o realce que ficava aceso depois de o ponteiro ter ido embora. */
+.arc-cell,
+.arc-cell:hover,
+.arc-cell:active,
+.arc-cell:focus,
+.arc-cell:focus:hover,
+.arc-cell:checked,
+.arc-cell:checked:hover,
+.arc-cell:selected,
+.arc-cell:outlined,
+.arc-cell:insensitive {
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    background-gradient-direction: vertical;
+    background-gradient-start: transparent;
+    background-gradient-end: transparent;
+    border: none;
+    border-image: none;
+    box-shadow: none;
+    outline: none;
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+/* A célula não muda com o tema — ela não pinta nada em tema nenhum. O gêmeo
+ * existe só para a estampagem mecânica de `-dark` nunca cair no vazio, e
+ * repete a única declaração que importa para isso ser verdade. */
+.arc-cell-dark {
+    background-color: transparent;
+}
+
+/* Seleção de TECLADO na célula (a de ponteiro não existe, ver acima). Só
+ * preenchimento, sem borda e sem sombra: a célula é o fundo do gesto, e um
+ * contorno aqui competiria com o ícone, que é o assunto. Quem quiser
+ * contorno empilha `.arc-ring-thin` — e `.arc-hold-2` no repouso, senão a
+ * caixa pula 2px ao selecionar. */
+.arc-cell-selected,
+.arc-cell-selected:hover {
+    background-color: rgba(255, 255, 255, 0.22);
+}
+
+/* Cai um pouco: sobre a tinta mais densa do tema escuro o mesmo branco
+ * translúcido pesa mais. */
+.arc-cell-selected-dark,
+.arc-cell-selected-dark:hover {
+    background-color: rgba(255, 255, 255, 0.17);
+}
+
+/* Nome do item sob o ícone. Branco nos DOIS temas: o chão dele é arte
+ * (wallpaper ou a tinta escura da grade), nunca o papel do tema. A sombra é
+ * o que mantém o nome legível quando essa arte é clara — sem ela, branco
+ * sobre branco some. */
+.arc-grid-label {
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.96);
+    text-align: center;
+    text-overflow: ellipsis;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
+/* O gêmeo escuro não troca a COR — trocá-la seria escrever texto escuro
+ * sobre um chão que ficou mais escuro. Ele aprofunda a SOMBRA, e por um
+ * motivo concreto: na ArcDesk o tema escuro não pinta scrim nenhum atrás da
+ * grade (os ícones moram direto no wallpaper), então a sombra é a única
+ * coisa segurando o nome sobre um papel de parede claro. */
+.arc-grid-label-dark {
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+/* Hover do rótulo: negrito e ~1.2x do tamanho de repouso (12 -> 14px).
+ *
+ * O aumento é FONT-SIZE e não um `scale_*` do Clutter no actor: a sombra
+ * acima é pintada pelo St a partir de uma textura off-screen do rótulo, e
+ * sob um transform ela sai deslocada dos glifos — o resultado se lê como um
+ * segundo texto fantasma atrás do primeiro. Trocar o font-size não mexe na
+ * grade porque o rótulo tem largura E altura explícitas vindas do JS; o
+ * texto maior apenas ellipsiza mais cedo.
+ *
+ * É o único `bold` que sobrou na suíte depois do conflito de peso resolvido
+ * acima, e ele fica porque aqui o peso não é hierarquia — é o próprio
+ * feedback de hover, junto com o tamanho. */
+.arc-grid-label-hover {
+    font-size: 14px;
+    font-weight: bold;
+}
+
+.arc-grid-label-hover-dark {
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+/* "Nenhum item aqui". Um degrau acima do rótulo porque é a única linha da
+ * tela quando aparece, e mais apagada porque é ausência de conteúdo, não
+ * conteúdo. */
+.arc-grid-empty {
+    font-size: 15px;
+    color: rgba(255, 255, 255, 0.75);
+    text-align: center;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
+.arc-grid-empty-dark {
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+/* A CASA onde um ícone mora, pintada só durante um arraste: no buraco que o
+ * ícone no ar deixou para trás, e na casa para onde ele vai se o usuário
+ * soltar agora.
+ *
+ * O preenchimento do tema CLARO é escuro. Sobre um vidro claro (ou sobre um
+ * wallpaper qualquer) um branco translúcido não lê como buraco — lê como
+ * reflexo. Só no tema escuro o buraco é feito de brilho.
+ *
+ * Sem borda, sem sombra: a casa é o fundo do gesto, não o assunto dele. O
+ * assunto é o ícone que está na mão, e qualquer contorno aqui competiria
+ * com ele. */
+.arc-slot {
+    background-color: rgba(0, 0, 0, 0.10);
+}
+
+.arc-slot-dark {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* A casa de DESTINO ganha um fio sobre o mesmo preenchimento. As duas
+ * coexistem na tela — o buraco de origem fica aceso o gesto inteiro — e sem
+ * essa diferença mínima elas leriam como dois buracos em vez de "saiu
+ * daqui, vai para ali". */
+.arc-slot-target {
+    border: 1px solid rgba(0, 0, 0, 0.20);
+}
+
+.arc-slot-target-dark {
+    border: 1px solid rgba(255, 255, 255, 0.24);
+}
+
+/* A casa de TROCA: a casa OCUPADA cujo morador vai trocar de lugar com o
+ * ícone que está na mão. É nova, e é da ArcDesk (grade livre; o launcher da
+ * ArcDock reacomoda em vez de trocar).
+ *
+ * Ela NÃO pode ser um segundo `-target`. Duas casas iguais acesas anunciam
+ * dois lugares livres, e um deles seria mentira: ali tem alguém, e esse
+ * alguém vai se mexer. A diferença precisa ser de CANAL, não de intensidade
+ * — um mesmo fio branco mais forte leria como "o alvo mais provável dos
+ * dois", que é outra frase e também falsa.
+ *
+ * Por isso a troca é o AZUL do anel de seleção, e não mais um cinza: o azul
+ * já significa, no vocabulário da suíte, "é isto que vai acontecer". E o
+ * preenchimento é mais forte que o do `.arc-slot` de propósito — a casa de
+ * troca tem conteúdo por baixo, então um véu fraco se perderia no ícone que
+ * mora nela. */
+.arc-slot-swap {
+    background-color: rgba(0, 122, 255, 0.16);
+    border: 1px solid rgba(0, 122, 255, 0.55);
+}
+
+/* #0A84FF pelo mesmo motivo do `.arc-ring-dark`, e a borda sobe: sobre um
+ * fundo escuro o azul de 0.55 não fecha o retângulo. */
+.arc-slot-swap-dark {
+    background-color: rgba(10, 132, 255, 0.20);
+    border: 1px solid rgba(10, 132, 255, 0.70);
+}
+
+/* Realce de "soltar aqui cria uma pasta", pintado ATRÁS do ícone alvo. O
+ * anel é mais forte que o preenchimento porque é ele que separa "vai fundir
+ * com este" de "está só passando por cima".
+ *
+ * Branco e não azul, ao contrário do `.arc-slot-swap`: a fusão acontece
+ * sobre a ARTE de um ícone, e uma tinta colorida ali mudaria a cor do
+ * próprio ícone que o usuário está mirando. */
+.arc-merge-halo {
+    border: 2px solid rgba(255, 255, 255, 0.75);
+    background-color: rgba(255, 255, 255, 0.16);
+}
+
+.arc-merge-halo-dark {
+    border: 2px solid rgba(255, 255, 255, 0.62);
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Capa da pasta na célula da grade. A GEOMETRIA INTERNA (tamanho dos
+ * mini-ícones, respiro e vão da grade 3x3) vem toda do JS, em
+ * folderPreview.js: ela é derivada do lado do ladrilho, e padding de CSS
+ * não é legível de volta. O que esta regra pinta é só a moldura.
+ *
+ * Sem sombra: empilhe `.arc-e3`. Sem raio: ver o cabeçalho do bloco. */
+.arc-folder-tile {
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background-color: rgba(255, 255, 255, 0.18);
+}
+
+.arc-folder-tile-dark {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background-color: rgba(255, 255, 255, 0.11);
+}
+
+/* Painel da pasta aberta: o mesmo vidro do campo de busca, em cartão largo.
+ *
+ * Alpha MENOR que o do campo (0.16 -> 0.13) apesar de este ser o elemento
+ * em foco: a área é muitas vezes maior, e a mesma densidade num cartão
+ * desse tamanho vira uma placa branca no meio da tela. Quem dá o destaque
+ * ao painel é o `.arc-shade` atrás dele, não um vidro mais aceso.
+ *
+ * Sem raio e sem padding — os dois espelham constantes do JS. Sem sombra:
+ * empilhe `.arc-e6`. */
+.arc-folder-panel {
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    background-color: rgba(255, 255, 255, 0.13);
+}
+
+.arc-folder-panel-dark {
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background-color: rgba(255, 255, 255, 0.09);
+}
+
+/* Bico do painel: um quadradinho que o JS gira 45° para virar triângulo.
+ *
+ * Fundo e borda são OS MESMOS do painel — qualquer diferença apareceria
+ * como um degrau logo acima da borda do cartão. A borda fica nos quatro
+ * lados porque só dois deles saem para fora do painel depois da rotação, e
+ * os outros dois ficam escondidos atrás do corpo do cartão: definir lados
+ * separados não mudaria o desenho e amarraria o CSS ao ângulo que o JS
+ * escolheu.
+ *
+ * O raio pequeno tira o fio de navalha da ponta, que é o único ponto onde o
+ * quadrado girado destoa do resto do cartão — e ele fica AQUI, não em
+ * `.arc-r-3`, porque é a única peça da suíte que precisa dele e separá-lo
+ * seria pedir que ninguém esquecesse de empilhar.
+ *
+ * SEM sombra, de propósito: a do painel é desenhada a partir do retângulo
+ * do painel, e uma segunda sombra aqui marcaria o contorno do quadrado
+ * inteiro, denunciando que o triângulo é um quadrado girado. */
+.arc-folder-arrow {
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    background-color: rgba(255, 255, 255, 0.13);
+    box-shadow: none;
+}
+
+.arc-folder-arrow-dark {
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background-color: rgba(255, 255, 255, 0.09);
+}
+
+/* Nome da pasta em repouso.
+ *
+ * O padding e a borda transparente de um pixel NÃO são decoração: eles
+ * copiam a caixa do `.arc-folder-entry`, para que trocar o rótulo pelo
+ * campo de edição não mexa na altura do painel. É por isso que os dois
+ * moram no mesmo arquivo e um comentário nos dois lados diz que eles andam
+ * juntos — separá-los é como o pulo de 1px volta.
+ *
+ * Branco nos dois temas, mesma razão do `.arc-grid-label`: o chão é o vidro
+ * do painel, que deixa passar wallpaper borrado. */
+.arc-folder-title {
+    padding: 4px 12px;
+    border: 1px solid rgba(255, 255, 255, 0);
+    font-size: 17px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.96);
+    text-align: center;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
+.arc-folder-title-dark {
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+}
+
+/* O mesmo nome sendo EDITADO. Métricas idênticas às do título acima (ver o
+ * comentário de lá) e uma pílula discreta para o campo se anunciar como
+ * editável.
+ *
+ * A `text-shadow` sai: sobre a pílula translúcida ela vira borrão em volta
+ * dos glifos em vez de contorno. O vocabulário de cursor e seleção é o do
+ * `.arc-field` — não faria sentido o único outro campo de texto do painel
+ * se comportar de outro jeito. */
+.arc-folder-entry {
+    padding: 4px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    background-color: rgba(255, 255, 255, 0.14);
+    font-size: 17px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.96);
+    caret-color: rgba(255, 255, 255, 0.9);
+    selection-background-color: rgba(255, 255, 255, 0.28);
+    selected-color: rgba(255, 255, 255, 0.98);
+}
+
+.arc-folder-entry-dark {
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background-color: rgba(255, 255, 255, 0.09);
+}
+
+.arc-folder-entry:focus {
+    border: 1px solid rgba(255, 255, 255, 0.52);
+    background-color: rgba(255, 255, 255, 0.20);
+}
+
+/* Duas classes, para ganhar de `.arc-folder-entry-dark` — mesma razão do
+ * `.arc-field-dark:focus`. */
+.arc-folder-entry-dark:focus {
+    border: 1px solid rgba(255, 255, 255, 0.38);
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+/* Ponto de paginação sob uma grade. O aceso é quase branco cheio e o
+ * apagado fica bem abaixo: são poucos pixels, e uma diferença sutil aqui
+ * some — o usuário precisa contar as páginas de relance. */
+.arc-dot {
+    border-radius: 999px;
+    background-color: rgba(255, 255, 255, 0.35);
+}
+
+.arc-dot-dark {
+    background-color: rgba(255, 255, 255, 0.28);
+}
+
+.arc-dot-active {
+    background-color: rgba(255, 255, 255, 0.92);
+}
+
+.arc-dot-active-dark {
+    background-color: rgba(255, 255, 255, 0.85);
+}
+
+
+/* --- A própria superfície da área de trabalho -------------------------------
+ * Não pinta NADA: o que aparece atrás dos ícones é o papel de parede, e uma
+ * cor aqui seria uma folha opaca cobrindo a tela inteira. A classe existe
+ * para dar um gancho de tema aos descendentes e para o dia em que alguém
+ * quiser um véu opcional sobre o wallpaper — não para desenhar.
+ *
+ * Sem tamanho também: quem dimensiona é o Layout.MonitorConstraint. O truque
+ * de `background-color: rgba(0,0,0,0.01)` que circula em fóruns para "dar
+ * alocação" a um widget nesta camada é um diagnóstico errado — o que falta a
+ * um St.Widget sem conteúdo é tamanho preferido, e quem resolve isso é a
+ * constraint, não uma cor fantasma. */
+.arc-desk {
+    background-color: transparent;
+}
+
+.arc-desk-dark {
+    background-color: transparent;
+}
+
+/* O nome da pasta enquanto é só um rótulo clicável (clicar entra em edição).
+ * É um St.Button, então precisa do reset completo — sem ele o tema do usuário
+ * pinta um fundo de botão atrás do título. O texto em si vem de
+ * .arc-folder-title, que é o filho; aqui só se apaga a moldura. */
+.arc-folder-title-button,
+.arc-folder-title-button:hover,
+.arc-folder-title-button:active,
+.arc-folder-title-button:focus,
+.arc-folder-title-button:checked,
+.arc-folder-title-button:selected {
+    background: none;
+    background-color: transparent;
+    background-image: none;
+    background-gradient-direction: vertical;
+    background-gradient-start: transparent;
+    background-gradient-end: transparent;
+    border: none;
+    border-image: none;
+    box-shadow: none;
+    outline: none;
+    padding: 0;
+    transition-duration: 0ms;
+    transition-property: none;
+}
+
+/* ==================================================================
+ * END OF common.css — everything below is this extension's local.css,
+ * byte for byte. The line offset of this marker is what makes
+ *     diff <(tail -n +N stylesheet.css) local.css
+ * a meaningful check.
+ * ================================================================== */
 /* ArcDock — translucent dock inspired by macOS Tahoe.
  *
  * The translucent rim has THREE visual layers, not one solid border:
@@ -720,4 +2202,128 @@
 
 .arcdock-slot-dark.arcdock-slot-target {
     border: 1px solid rgba(255, 255, 255, 0.24);
+}
+
+/* Diálogo de propriedades: separa identidade, edição e metadados para que
+ * a leitura siga a ordem da tarefa em vez de parecer um bloco de texto. */
+.arcdock-properties {
+    spacing: 14px;
+    min-width: 390px;
+}
+
+.arcdock-properties-title {
+    font-size: 18px;
+    font-weight: 700;
+    padding-bottom: 2px;
+}
+
+.arcdock-properties-identity {
+    spacing: 14px;
+    padding: 2px 0 6px 0;
+}
+
+.arcdock-properties-icon {
+    width: 64px;
+    height: 64px;
+}
+
+.arcdock-properties-app-name {
+    font-size: 15px;
+    font-weight: 600;
+    padding-bottom: 3px;
+}
+
+.arcdock-properties-icon-button {
+    padding: 3px 0;
+    background-color: transparent;
+    color: -st-accent-color;
+    font-size: 13px;
+}
+
+.arcdock-properties-icon-button:hover,
+.arcdock-properties-icon-button:focus {
+    color: st-lighten(-st-accent-color, 12%);
+}
+
+.arcdock-properties-field-label,
+.arcdock-properties-section-label {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.arcdock-properties-section-label {
+    padding-top: 4px;
+}
+
+.arcdock-properties-entry {
+    min-height: 22px;
+}
+
+.arcdock-properties-entry:error {
+    border-color: #e66b6b;
+}
+
+.arcdock-properties-details {
+    spacing: 9px;
+    padding: 13px 14px;
+    border-radius: 12px;
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.arcdock-properties-detail-row {
+    spacing: 12px;
+}
+
+.arcdock-properties-detail-key {
+    width: 82px;
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 13px;
+}
+
+.arcdock-properties-detail-value {
+    width: 260px;
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 13px;
+}
+
+.arcdock-properties-status-running {
+    color: #73d18b;
+}
+
+.arcdock-icon-picker {
+    spacing: 10px;
+    width: 380px;
+}
+
+.arcdock-icon-picker-subtitle,
+.arcdock-icon-picker-status {
+    color: rgba(255, 255, 255, 0.62);
+    font-size: 12px;
+}
+
+.arcdock-icon-picker-search {
+    margin-top: 4px;
+}
+
+.arcdock-icon-picker-scroll {
+    height: 330px;
+    padding: 8px 18px 8px 4px;
+}
+
+.arcdock-icon-picker-grid {
+    width: 312px;
+}
+
+.arcdock-icon-picker-item {
+    width: 56px;
+    height: 56px;
+    padding: 8px;
+    border-radius: 12px;
+    background-color: transparent;
+}
+
+.arcdock-icon-picker-item:hover,
+.arcdock-icon-picker-item:focus {
+    background-color: rgba(255, 255, 255, 0.12);
 }

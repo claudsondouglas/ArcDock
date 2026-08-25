@@ -1,11 +1,21 @@
 import GObject from 'gi://GObject';
+import Gio from 'gi://Gio';
 import St from 'gi://St';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import { fillAppActionsSection } from './appActionsMenu.js';
+import {
+    addToArcDesk,
+    isArcDeskActive,
+    isOnArcDesk,
+    removeFromArcDesk,
+    getArcDeskAppearance,
+    watchArcDeskAppearance,
+} from './arcdeskBridge.js';
 import { INDICATOR, IndicatorStyle } from './config.js';
+import { ItemType, makeId } from './dockItemsStore.js';
 import { IconButton } from './iconButton.js';
 import { triggerLaunchBounce } from './iconAnimation.js';
 import { SignalTracker } from './trackers.js';
@@ -34,12 +44,15 @@ class DockIcon extends IconButton {
         this._dotSize = params.indicatorDotSize ?? INDICATOR.DOT_SIZE;
         this._clickToMinimize = params.clickToMinimize ?? false;
         this._onTogglePinned = params.onTogglePinned ?? null;
+        this._onAppActivated = params.onAppActivated ?? null;
         this._attentionTracker = params.attentionTracker ?? null;
 
-        const texture = app.create_icon_texture(this.iconSize);
-        texture.add_style_class_name('arcdock-icon-texture');
-        texture.set_style?.(`icon-size: ${this.iconSize}px;`);
-        this.setIconChild(texture);
+        this._refreshSharedAppearance();
+        this._stopAppearanceWatch = watchArcDeskAppearance(() =>
+            this._refreshSharedAppearance());
+        this.connect('destroy', () => {
+            this._stopAppearanceWatch?.();
+        });
 
         // Cor do indicador herda do foreground do popup-menu-content
         // (texto do tema atual) — fica claro em tema escuro, escuro em
@@ -82,7 +95,7 @@ class DockIcon extends IconButton {
         this.app = app;
         this._pinned = !!pinned;
         this._running = !!running;
-        this.setTooltipText(app.get_name() || window?.get_title() || 'Application');
+        this._refreshSharedAppearance();
         this._updateRunningIndicator();
         this._connectWindowSignals();
         this._updatePinItem();
@@ -215,6 +228,13 @@ class DockIcon extends IconButton {
         this._pinItem.connect('activate', () => this._onTogglePinned?.(this));
         this.menu.addMenuItem(this._pinItem);
 
+        // Rótulo vazio e sem visibilidade decidida aqui: quem manda na área
+        // de trabalho é OUTRA extensão, que o usuário pode ligar ou desligar
+        // entre dois cliques. Tudo é relido em _populateMenu().
+        this._deskItem = new PopupMenu.PopupMenuItem('');
+        this._deskItem.connect('activate', () => this._toggleOnDesk());
+        this.menu.addMenuItem(this._deskItem);
+
         this._quitItem = new PopupMenu.PopupMenuItem('Fechar');
         this._quitItem.connect('activate', () => this.app?.request_quit?.());
         this.menu.addMenuItem(this._quitItem);
@@ -238,14 +258,71 @@ class DockIcon extends IconButton {
             : 'Fixar na dock';
     }
 
+    /**
+     * Id deste app no formato que o ArcDesk persiste.
+     *
+     * `makeId(ItemType.APP, …)` produz exatamente o `app:<desktop-id>` do
+     * contrato — os dois tipos se chamam 'app' nas duas extensões, e é por
+     * isso que não há conversão nenhuma no meio.
+     */
+    _deskId() {
+        const appId = this.app?.get_id?.();
+        return appId ? makeId(ItemType.APP, appId) : null;
+    }
+
+    _updateDeskItem() {
+        if (!this._deskItem)
+            return;
+        const id = this._deskId();
+        // Presença e estado relidos AGORA, nunca guardados da construção:
+        // o ArcDesk pode ter sido ligado (ou desligado) depois que este
+        // ícone nasceu, e um item apontando para uma extensão que não está
+        // de pé seria um clique sem efeito nenhum.
+        this._deskItem.actor.visible = !!id && isArcDeskActive();
+        this._deskItem.label.text = id && isOnArcDesk(id)
+            ? 'Remover da área de trabalho'
+            : 'Adicionar à área de trabalho';
+    }
+
+    _refreshSharedAppearance() {
+        const id = this._deskId();
+        const appearance = id ? getArcDeskAppearance(id) : { name: null, icon: null };
+        this.setTooltipText(appearance.name || this.app.get_name() ||
+            this.window?.get_title() || 'Application');
+        let texture;
+        if (appearance.icon) {
+            texture = new St.Icon({
+                gicon: new Gio.FileIcon({ file: Gio.File.new_for_path(appearance.icon) }),
+                icon_size: this.iconSize,
+            });
+        } else {
+            texture = this.app.create_icon_texture(this.iconSize);
+        }
+        texture.add_style_class_name('arcdock-icon-texture');
+        texture.set_style?.(`icon-size: ${this.iconSize}px;`);
+        this.setIconChild(texture);
+    }
+
+    _toggleOnDesk() {
+        const id = this._deskId();
+        if (!id)
+            return;
+        if (isOnArcDesk(id))
+            removeFromArcDesk(id);
+        else
+            addToArcDesk(id);
+    }
+
     _populateMenu() {
         this._updatePinItem();
+        this._updateDeskItem();
         this._rebuildActionsMenu();
         this._rebuildWindowMenu();
         this._quitItem.actor.visible = !!this._running;
     }
 
     _onPrimaryActivate() {
+        this._onAppActivated?.(this.app);
         if (!this.window) {
             // Só o LANÇAMENTO ganha o quique — é ele que sinaliza "o app
             // está abrindo, espera". Trazer uma janela existente para a
@@ -271,6 +348,7 @@ class DockIcon extends IconButton {
     }
 
     _onMiddleActivate() {
+        this._onAppActivated?.(this.app);
         this.window?.delete(global.get_current_time());
     }
 

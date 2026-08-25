@@ -3,16 +3,30 @@ import GLib from 'gi://GLib';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { Dock } from './src/dock.js';
+import { AppUsageDatabase } from './src/appUsageDatabase.js';
 import { WakeWatcher } from './src/wakeWatcher.js';
 
 export default class ArcDockExtension extends Extension {
+    /**
+     * API pública para extensões irmãs registrarem uma ativação de app.
+     * Só valores primitivos cruzam a fronteira; fila e SQLite continuam
+     * privados do ArcDock.
+     */
+    recordExternalAppClick(appId, appName = '', source = 'external') {
+        if (!this._enabled || !this._usageDatabase)
+            return false;
+        return this._usageDatabase.recordClickById(appId, appName, source);
+    }
+
     enable() {
         log('[ArcDock] enable() entry');
         try {
             this._enabled = true;
-            this._restartSourceIds = new Set();
+            this._restartSourceId = 0;
+            this._pendingRestartReasons = new Set();
             this._signalConnections = [];
             this._settings = this.getSettings();
+            this._usageDatabase = new AppUsageDatabase();
             this._lastSessionMode = Main.sessionMode.currentMode;
             log(`[ArcDock] enable: lastSessionMode=${this._lastSessionMode}`);
             this._wakeWatcher = new WakeWatcher(() => this._scheduleDockRestart(1200, 'prepare-for-sleep'));
@@ -77,7 +91,7 @@ export default class ArcDockExtension extends Extension {
                         this._destroyDock();
                     } else if (wasLocked) {
                         this._ensureDock();
-                        this._scheduleDockRepairSeries('session-unlocked');
+                        this._scheduleDockRepair('session-unlocked');
                     }
                 } catch (e) {
                     logError(e, '[ArcDock] sessionMode updated handler failed');
@@ -89,11 +103,11 @@ export default class ArcDockExtension extends Extension {
             });
             this._connectSignal(Main.screenShield, 'wake-up-screen', () => {
                 log('[ArcDock] screen wake-up detected');
-                this._scheduleDockRepairSeries('screen-wake-up');
+                this._scheduleDockRepair('screen-wake-up');
             });
             if (!this._isLockedMode(this._lastSessionMode)) {
                 this._ensureDock();
-                this._scheduleDockRepairSeries('enable');
+                this._scheduleDockRepair('enable');
             }
         } catch (e) {
             logError(e, '[ArcDock] enable() failed');
@@ -119,6 +133,7 @@ export default class ArcDockExtension extends Extension {
             this._wakeWatcher?.destroy();
             this._wakeWatcher = null;
             this._destroyDock();
+            this._usageDatabase = null;
             this._settings = null;
         } catch (e) {
             logError(e, '[ArcDock] disable() failed');
@@ -152,6 +167,7 @@ export default class ArcDockExtension extends Extension {
     _createDock() {
         this._dock = new Dock({
             settings: this._settings,
+            usageDatabase: this._usageDatabase,
             iconSize: this._settings?.get_int('icon-size'),
             useThemeRunningDotColor:
                 this._settings?.get_boolean('running-dot-theme-color') ?? false,
@@ -199,28 +215,36 @@ export default class ArcDockExtension extends Extension {
         this._dock = null;
     }
 
-    _scheduleDockRepairSeries(reason) {
+    _scheduleDockRepair(reason) {
+        // Startup, unlock and wake commonly emit several monitors-changed
+        // signals while Mutter settles the display layout.  One trailing
+        // repair is enough; rebuilding again at 4 s and 10 s makes the dock
+        // visibly disappear after the desktop is already ready.
         this._scheduleDockRestart(1200, reason);
-        this._scheduleDockRestart(4000, reason);
-        this._scheduleDockRestart(10000, reason);
     }
 
     _scheduleDockRestart(delayMs, reason = 'unknown') {
         if (!this._enabled)
             return;
 
-        const id = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delayMs, () => {
-            this._restartSourceIds.delete(id);
-            this._restartDock(reason);
+        this._pendingRestartReasons.add(reason);
+        if (this._restartSourceId)
+            GLib.source_remove(this._restartSourceId);
+
+        this._restartSourceId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, delayMs, () => {
+            this._restartSourceId = 0;
+            const reasons = [...this._pendingRestartReasons].join(', ');
+            this._pendingRestartReasons.clear();
+            this._restartDock(reasons);
             return GLib.SOURCE_REMOVE;
         });
-        this._restartSourceIds.add(id);
     }
 
     _cancelDockRestarts() {
-        for (const id of this._restartSourceIds)
-            GLib.source_remove(id);
-        this._restartSourceIds.clear();
+        if (this._restartSourceId)
+            GLib.source_remove(this._restartSourceId);
+        this._restartSourceId = 0;
+        this._pendingRestartReasons.clear();
     }
 
     _restartDock(reason) {

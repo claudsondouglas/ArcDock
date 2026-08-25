@@ -23,6 +23,27 @@ export function setTooltipTheme(theme) {
   tooltipTheme = theme === DockTheme.DARK ? DockTheme.DARK : DockTheme.LIGHT;
 }
 
+// Balões ligados ou desligados (key `show-tooltips`). Estado de módulo
+// pelo mesmo motivo do tema acima: existe UMA dock por sessão e o
+// tooltip nasce aqui dentro, então nem IconButton nem as subclasses
+// precisam carregar a preferência só para repassá-la. O Dock chama
+// setTooltipsEnabled() no construtor e a cada `changed::show-tooltips` —
+// desligar é só um portão na hora de mostrar, nada precisa ser recriado.
+let tooltipsEnabled = true;
+
+// Único botão com balão na tela: só um ícone fica em hover por vez.
+// Existe para o caso de a preferência ser desligada com um balão já
+// aberto (`gsettings set` num terminal, outro monitor) — quem desligou
+// não tem como alcançar o botão dono dele, e o balão vive no uiGroup,
+// fora da árvore do painel, então ficaria pintado sobre a área de
+// trabalho até o próximo hover.
+let tooltipOwner = null;
+
+export function setTooltipsEnabled(enabled) {
+  tooltipsEnabled = enabled !== false;
+  if (!tooltipsEnabled && tooltipOwner) _hideTooltip(tooltipOwner, true);
+}
+
 // Nomes das transições implícitas criadas por actor.ease(). O helper do
 // Shell troca o "_" da propriedade por "-", então é por estes nomes que
 // removemos UMA animação sem derrubar as outras do mesmo actor — ver
@@ -405,6 +426,7 @@ function _hop(button, target, height, hopsLeft, upMs, downMs) {
 // --- Tooltip ---
 
 function _showTooltip(button) {
+  if (!tooltipsEnabled) return;
   const text = button._tooltipText;
   if (!text) return;
   if (button._tooltipSuppressed) return;
@@ -498,6 +520,7 @@ function _showTooltip(button) {
   });
 
   button._tooltip = tooltip;
+  tooltipOwner = button;
 }
 
 /**
@@ -509,6 +532,7 @@ function _showTooltip(button) {
 function _hideTooltip(button, immediate = false) {
   const tooltip = button._tooltip;
   button._tooltip = null;
+  if (tooltipOwner === button) tooltipOwner = null;
   // Um bubble anterior ainda em fade-out: nunca deixamos dois vivos.
   const fading = button._tooltipFading;
   button._tooltipFading = null;

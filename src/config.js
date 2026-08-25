@@ -33,12 +33,12 @@ export const DockTheme = Object.freeze({
 // Seção "abertos recentemente", espelhando o "Show recent applications in
 // Dock" do macOS.
 export const RECENT = Object.freeze({
-  // Três, como no macOS: o suficiente para "aquele app que acabei de
-  // fechar" e pouco o bastante para não virar uma segunda dock.
-  VISIBLE: 3,
+  // Seis deixam uma janela de uso recente mais útil sem transformar esta
+  // seção numa segunda dock completa.
+  VISIBLE: 6,
   // O histórico guarda MUITO mais do que aparece: só entram na exibição os
   // que não estão fixados nem rodando, então a fila precisa de folga para
-  // ainda ter três candidatos quando os primeiros estiverem todos abertos.
+  // ainda ter seis candidatos quando os primeiros estiverem todos abertos.
   HISTORY_MAX: 10,
   // Divisor: um fio de 1px com ~60% da altura do ícone.
   SEPARATOR_WIDTH: 1,

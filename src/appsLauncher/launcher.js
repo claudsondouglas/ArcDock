@@ -8,6 +8,12 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import { DockTheme, LAUNCHER, State } from '../config.js';
 import { DesktopShortcut } from '../desktopShortcut.js';
+import {
+    getArcDeskAppearance,
+    setArcDeskIcon,
+    setArcDeskName,
+} from '../arcdeskBridge.js';
+import { AppPropertiesDialog } from '../appPropertiesDialog.js';
 import { SignalTracker } from '../trackers.js';
 import { applyGlass } from '../glassEffect.js';
 import * as Cursor from '../cursor.js';
@@ -152,6 +158,13 @@ export class AppsLauncher {
      * @param {(desktopId: string) => void} [params.onTogglePinned] fixa ou
      *   desafixa. Opcional JUNTO com o anterior: sem os dois, o item de
      *   fixar simplesmente não aparece no menu.
+     * @param {(desktopId: string) => boolean} [params.isOnDesk] o app está
+     *   na área de trabalho do ArcDesk?
+     * @param {(desktopId: string) => void} [params.toggleOnDesk] põe ou tira
+     *   da área de trabalho. Opcional JUNTO com o anterior, pela mesma razão
+     *   do par acima.
+     * @param {(app: Shell.App) => void} [params.onAppActivated] registra a
+     *   ativação de um app feita por esta grade.
      */
     constructor(params = {}) {
         // Guardado, mas SEM nenhum listener de `changed::`: quem observa as
@@ -188,11 +201,25 @@ export class AppsLauncher {
         this._onTogglePinned = typeof params.onTogglePinned === 'function'
             ? params.onTogglePinned
             : null;
+        // O par da área de trabalho segue a mesma regra do par de fixar: os
+        // dois ou nenhum. Vem da dock e não da ponte direto porque quem sabe
+        // montar o id tipado (`app:<desktop-id>`) a partir de um desktop-id
+        // é ela.
+        this._isOnDesk = typeof params.isOnDesk === 'function'
+            ? params.isOnDesk
+            : null;
+        this._toggleOnDesk = typeof params.toggleOnDesk === 'function'
+            ? params.toggleOnDesk
+            : null;
+        this._onAppActivated = typeof params.onAppActivated === 'function'
+            ? params.onAppActivated
+            : null;
         // Uma instância para o launcher inteiro, e não uma por célula: os
         // cancellables dela morrem no destroy() daqui, e pendurá-los nas
         // células faria a primeira remontagem da grade cancelar a cópia
         // que o usuário acabou de pedir.
         this._shortcuts = new DesktopShortcut();
+        this._propertiesDialog = null;
         // Célula cujo menu de contexto está aberto. É o equivalente ao
         // `isEditingName` do painel de pasta: enquanto ele existe, o
         // teclado é do menu e o _onKeyPress daqui tem que sair da frente.
@@ -517,6 +544,8 @@ export class AppsLauncher {
         // Antes das páginas, pelo mesmo motivo do painel: o menu é filho do
         // uiGroup e ainda pode estar segurando um modal próprio.
         safe(() => this._closeIconMenu());
+        safe(() => this._propertiesDialog?.destroy());
+        this._propertiesDialog = null;
         // Cancela qualquer cópia de .desktop em voo. O callback dela
         // sobreviveria ao objeto e tocaria numa notificação de erro de uma
         // extensão que já foi desabilitada.
@@ -562,6 +591,8 @@ export class AppsLauncher {
         this._onVisibilityChanged = null;
         this._isAppPinned = null;
         this._onTogglePinned = null;
+        this._isOnDesk = null;
+        this._toggleOnDesk = null;
         this._menuIcon = null;
         this._menuPolicyObject = null;
         this._settings = null;
@@ -1334,6 +1365,7 @@ export class AppsLauncher {
 
     _launch(app) {
         if (!app) return;
+        this._onAppActivated?.(app);
         // Fecha ANTES de ativar: close() devolve o grab na primeira linha, e
         // uma janela nova não consegue tomar o foco enquanto o overlay
         // ainda segura o teclado do seat.
@@ -1390,6 +1422,11 @@ export class AppsLauncher {
     }
 
     _createIcon(item, labelWidth, dnd) {
+        if (item?.type === LauncherItemType.APP) {
+            const appearance = getArcDeskAppearance(item.id);
+            item.name = appearance.name || item.app?.get_name?.() || item.name || '';
+            item.customIcon = appearance.icon;
+        }
         return new AppGridIcon({
             item,
             iconSize: LAUNCHER.ICON,
@@ -1418,6 +1455,7 @@ export class AppsLauncher {
     _menuPolicy() {
         const policy = {
             createShortcut: (app) => this._shortcuts?.create(app),
+            showProperties: (app, icon) => this._showAppProperties(app, icon),
             // Lançar pelo menu é lançar: a grade sai de cena igual a um
             // clique normal na célula. close() devolve o grab na primeira
             // linha e só destrói as células no fim do fade, então chamá-la
@@ -1427,6 +1465,21 @@ export class AppsLauncher {
             stateChanged: (icon, isOpen) =>
                 this._onIconMenuStateChanged(icon, isOpen),
         };
+        // Mesma regra do par de fixar, e pelo mesmo motivo: um item que sabe
+        // consultar a área de trabalho mas não sabe gravá-la (ou o
+        // contrário) é um rótulo mentiroso. Consultado a CADA abertura,
+        // porque o ArcDesk pode ter sido mexido — ou desligado — entre um
+        // clique direito e o próximo.
+        if (this._isOnDesk && this._toggleOnDesk) {
+            policy.isOnDesk = (app) => {
+                const appId = app?.get_id?.() ?? null;
+                return appId ? this._isOnDesk?.(appId) === true : false;
+            };
+            policy.toggleOnDesk = (app) => {
+                const appId = app?.get_id?.() ?? null;
+                if (appId) this._toggleOnDesk?.(appId);
+            };
+        }
         if (!this._isAppPinned || !this._onTogglePinned) return policy;
         // Consultado a CADA abertura, e não guardado: a dock pode ter sido
         // mexida (inclusive pelas preferências, noutro processo) entre um
@@ -1440,6 +1493,40 @@ export class AppsLauncher {
             if (appId) this._onTogglePinned?.(appId);
         };
         return policy;
+    }
+
+    _showAppProperties(app, icon) {
+        const appId = app?.get_id?.() ?? null;
+        if (!appId) return;
+        const id = makeLauncherId(LauncherItemType.APP, appId);
+        const appearance = getArcDeskAppearance(id);
+        const appInfo = app?.get_app_info?.() ?? null;
+        // O PopupMenu só libera seu modal depois do callback de activate.
+        GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+            if (this._state === State.HIDDEN) return GLib.SOURCE_REMOVE;
+            this._propertiesDialog ??= new AppPropertiesDialog();
+            this._propertiesDialog.present({
+                name: appearance.name || app.get_name?.() || '',
+                iconPath: appearance.icon,
+                defaultIcon: size => app?.create_icon_texture?.(size),
+                appId,
+                description: appInfo?.get_description?.() ?? null,
+                executable: appInfo?.get_executable?.() ?? null,
+                running: app?.get_state?.() === Shell.AppState.RUNNING,
+                windowCount: app?.get_windows?.().length ?? 0,
+            }, ({ name, iconPath }) => {
+                setArcDeskName(id, name);
+                if (iconPath) setArcDeskIcon(id, iconPath);
+                icon?.setLabelText(name);
+                icon?.setCustomIcon(iconPath);
+                const entry = this._entryByAppId?.get(appId);
+                if (entry) {
+                    entry.name = name;
+                    entry.customIcon = iconPath;
+                }
+            });
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     _onIconMenuStateChanged(icon, isOpen) {

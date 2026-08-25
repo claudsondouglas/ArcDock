@@ -5,6 +5,11 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import { fillAppActionsSection } from '../appActionsMenu.js';
+// Só a PRESENÇA vem direto da ponte: "o ArcDesk está de pé" é um fato da
+// sessão inteira, igual para todas as células, e não uma decisão do
+// launcher. O que é específico do app — ler e gravar o id — continua vindo
+// pela política, porque quem sabe transformar um app no id tipado é a dock.
+import { isArcDeskActive } from '../arcdeskBridge.js';
 
 /**
  * Lado da seta, e portanto onde o menu nasce em relação à célula.
@@ -45,7 +50,11 @@ export class AppGridMenu {
      * @param {object} params.policy callbacks do launcher:
      *   - `isPinned(app) => boolean` e `togglePinned(app)` (opcionais, e
      *     opcionais JUNTOS: sem os dois o item de fixar não é criado)
+     *   - `isOnDesk(app) => boolean` e `toggleOnDesk(app)` (opcionais e
+     *     opcionais JUNTOS pelo mesmo motivo: um item que sabe consultar a
+     *     área de trabalho mas não sabe gravá-la teria rótulo mentiroso)
      *   - `createShortcut(app)`
+     *   - `showProperties(app, icon)`
      *   - `launch()` — algo vai ser lançado, a grade tem que sair de cena
      *     ANTES (o overlay segura o grab do seat; ver fillAppActionsSection)
      *   - `stateChanged(isOpen)`
@@ -88,6 +97,24 @@ export class AppGridMenu {
                 'create shortcut'));
         this._menu.addMenuItem(this._shortcutItem);
 
+        this._propertiesItem = new PopupMenu.PopupMenuItem('Propriedades');
+        this._propertiesItem.connect('activate', () =>
+            this._guard(() => this._policy.showProperties?.(
+                this._app, params.sourceActor), 'show app properties'));
+        this._menu.addMenuItem(this._propertiesItem);
+
+        const { isOnDesk, toggleOnDesk } = this._policy;
+        if (typeof isOnDesk === 'function' && typeof toggleOnDesk === 'function') {
+            // Rótulo vazio e visibilidade indefinida na construção, como no
+            // item de fixar e por um motivo a mais: o ArcDesk é outra
+            // extensão, que o usuário pode ligar ou desligar no meio da
+            // sessão. Quem resolve as duas coisas é `_populate()`.
+            this._deskItem = new PopupMenu.PopupMenuItem('');
+            this._deskItem.connect('activate', () =>
+                this._guard(() => toggleOnDesk(this._app), 'toggle on desk'));
+            this._menu.addMenuItem(this._deskItem);
+        }
+
         this._menu.connect('open-state-changed', (_menu, isOpen) =>
             this._guard(() => this._policy.stateChanged?.(isOpen),
                 'menu state'));
@@ -121,6 +148,8 @@ export class AppGridMenu {
         this._actionsSection = null;
         this._pinItem = null;
         this._shortcutItem = null;
+        this._propertiesItem = null;
+        this._deskItem = null;
         this._app = null;
         if (menu) {
             try {
@@ -152,6 +181,21 @@ export class AppGridMenu {
                     'menu launch'),
             });
         }, 'menu actions');
+
+        if (this._deskItem) {
+            // Presença perguntada AGORA: entre este clique direito e o
+            // anterior o usuário pode ter (des)ativado o ArcDesk, e um item
+            // apontando para uma extensão que não está de pé seria um clique
+            // sem efeito nenhum.
+            this._deskItem.actor.visible = isArcDeskActive();
+            let onDesk = false;
+            this._guard(() => {
+                onDesk = this._policy.isOnDesk?.(this._app) === true;
+            }, 'menu desk state');
+            this._deskItem.label.text = onDesk
+                ? 'Remover da área de trabalho'
+                : 'Adicionar à área de trabalho';
+        }
 
         if (!this._pinItem) return;
         let pinned = false;

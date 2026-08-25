@@ -36,6 +36,11 @@
       <summary>Click to minimize</summary>
       <description>If true, clicking the icon of the focused application minimizes its windows instead of only raising them. With several windows open, the click first cycles through the ones still visible and only minimizes when there is nothing left to raise.</description>
     </key>
+    <key name="show-tooltips" type="b">
+      <default>true</default>
+      <summary>Show tooltips on hover</summary>
+      <description>If true, hovering a dock icon shows a bubble with the application or folder name above it. If false, no bubble is ever shown; the icon still highlights and the pointer still changes.</description>
+    </key>
     <key name="show-apps-button" type="b">
       <default>true</default>
       <summary>Show Applications button</summary>

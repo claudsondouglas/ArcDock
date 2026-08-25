@@ -25,7 +25,7 @@ a dock some inteira: nada de hot-edge, nada de camada de clique.
 
 - **Apps.** Os fixados ficam sempre; um app aberto que não está fixado aparece enquanto roda e
   sai quando fecha.
-- **Abertos recentemente.** Espelha o "Show recent applications in Dock" do macOS: até três
+- **Abertos recentemente.** Espelha o "Show recent applications in Dock" do macOS: até seis
   apps abertos há pouco que não estão fixados nem rodando agora. O histórico é gravado sempre,
   mesmo com a seção desligada, pra que ligá-la de volta já encontre a fila cheia.
 - **Pastas.** Pastas do sistema de arquivos fixadas na dock, lidas de forma assíncrona (nada de
@@ -146,6 +146,7 @@ aplicativos), **Items** (a lista de pastas fixadas, com um seletor de pastas pra
 | `running-indicator-style` | `dot` | `dot`, `dots` (um por janela) ou `bar` |
 | `running-dot-theme-color` | desligado | usa a cor de frente do tema do sistema no indicador |
 | `click-to-minimize` | ligado | clicar no app em foco minimiza em vez de só levantar |
+| `show-tooltips` | ligado | balão com o nome do item ao passar o mouse sobre o ícone |
 | `show-apps-button` | ligado | mostra o botão de Aplicativos no fim da dock |
 | `apps-launcher-enabled` | ligado | o botão abre a grade própria; desligado, abre o overview |
 | `apps-launcher-columns` | 7 | apps por linha na grade, de 4 a 12 |
@@ -161,7 +162,16 @@ Estas outras são estado interno e não aparecem na tela de preferências: `dock
 Não são feitas pra edição à mão.
 
 Toda mudança de preferência derruba e remonta a dock, então o efeito é imediato e não há estado
-meio aplicado.
+meio aplicado. A única exceção é `show-tooltips`: mostrar o balão é um portão na hora do hover, e
+desligá-lo não precisa recriar ícone nenhum.
+
+## Banco de uso dos aplicativos
+
+O ArcDock mantém `~/Documents/arc/apps.db`, um banco SQLite local. A tabela `apps` resume cada
+aplicativo (`click_count`, `last_clicked_at` e `last_opened_at`); `app_clicks` guarda cada clique
+com sua origem (`dock`, `launcher` ou `arcdesk`) e `app_opens` preserva o histórico das aberturas. As datas
+são gravadas em UTC no formato ISO 8601. A escrita ocorre fora da thread do GNOME Shell para não
+interromper animações nem a resposta dos ícones.
 
 ## Integração com a ArcDesk
 

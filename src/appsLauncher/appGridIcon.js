@@ -1,4 +1,5 @@
 import Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import Pango from 'gi://Pango';
@@ -381,6 +382,17 @@ class AppGridIcon extends St.Button {
     setLabelText(text) {
         this._label?.set_text(text ?? '');
         if (this._item) this._item.name = text ?? '';
+    }
+
+    /**
+     * Troca a arte sem remontar a grade. O diálogo de propriedades fica
+     * sobre o launcher ainda aberto, então o actor atual precisa refletir
+     * a escolha assim que o usuário salva.
+     */
+    setCustomIcon(path) {
+        if (!this._item || !this._iconBin) return;
+        this._item.customIcon = path || null;
+        this._iconBin.set_child(this._createIconActor(this._iconSize));
     }
 
     /**
@@ -798,6 +810,14 @@ class AppGridIcon extends St.Button {
                 .map(entry => entry?.app)
                 .filter(app => app);
             return createFolderPreview(apps, size);
+        }
+        if (this._item?.customIcon) {
+            return new St.Icon({
+                gicon: new Gio.FileIcon({
+                    file: Gio.File.new_for_path(this._item.customIcon),
+                }),
+                icon_size: size,
+            });
         }
         // create_icon_texture() resolve o tema de ícones corretamente
         // (inclusive fallback por wm_class); só devolve null quando o
